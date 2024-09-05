@@ -1,51 +1,53 @@
-#include "config/ActiveSettings.h"
-
 #include "Cafe/GameProfile/GameProfile.h"
-#include "Cemu/Logging/CemuLogging.h"
-#include "LaunchSettings.h"
-#include "util/helpers/helpers.h"
-
-#include <boost/dll/runtime_symbol_info.hpp>
-
 #include "Cafe/IOSU/legacy/iosu_crypto.h"
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanAPI.h"
 #include "Cafe/CafeSystem.h"
+#include "Cemu/Logging/CemuLogging.h"
+#include "config/ActiveSettings.h"
+#include "config/LaunchSettings.h"
+#include "util/helpers/helpers.h"
 
-std::set<fs::path>
-ActiveSettings::LoadOnce(const fs::path& user_data_path,
-						 const fs::path& config_path,
-						 const fs::path& cache_path,
-						 const fs::path& data_path)
+void ActiveSettings::SetPaths(bool isPortableMode,
+		const fs::path& executablePath,
+		const fs::path& userDataPath,
+		const fs::path& configPath,
+		const fs::path& cachePath,
+		const fs::path& dataPath,
+		std::set<fs::path>& failedWriteAccess)
 {
-	s_full_path = boost::dll::program_location().generic_wstring();
-
-	s_user_data_path = user_data_path;
-	s_config_path = config_path;
-	s_cache_path = cache_path;
-	s_data_path = data_path;
-	std::set<fs::path> failed_write_access;
-	for (auto&& path : {user_data_path, config_path, cache_path})
+	cemu_assert_debug(!s_setPathsCalled); // can only change paths before loading
+	s_isPortableMode = isPortableMode;
+	s_executable_path = executablePath;
+	s_user_data_path = userDataPath;
+	s_config_path = configPath;
+	s_cache_path = cachePath;
+	s_data_path = dataPath;
+	failedWriteAccess.clear();
+	for (auto&& path : {userDataPath, configPath, cachePath})
 	{
-		if (!fs::exists(path))
-		{
-			std::error_code ec;
+		std::error_code ec;
+		if (!fs::exists(path, ec))
 			fs::create_directories(path, ec);
-		}
 		if (!TestWriteAccess(path))
 		{
-			cemuLog_log(LogType::Force, "Failed to write to {}", path.generic_string());
-			failed_write_access.insert(path);
+			cemuLog_log(LogType::Force, "Failed to write to {}", _pathToUtf8(path));
+			failedWriteAccess.insert(path);
 		}
 	}
+	s_executable_filename = s_executable_path.filename();
+	s_setPathsCalled = true;
+}
 
-	s_filename = s_full_path.filename();
+[[nodiscard]] bool ActiveSettings::IsPortableMode()
+{
+	return s_isPortableMode;
+}
 
-	g_config.SetFilename(GetConfigPath("settings.xml").generic_wstring());
-	g_config.Load();
-	LaunchSettings::ChangeNetworkServiceURL(GetConfig().account.active_service);
-	std::wstring additionalErrorInfo;
+void ActiveSettings::Init()
+{
+	cemu_assert_debug(s_setPathsCalled);
+	std::string additionalErrorInfo;
 	s_has_required_online_files = iosuCrypt_checkRequirementsForOnlineMode(additionalErrorInfo) == IOS_CRYPTO_ONLINE_REQ_OK;
-	return failed_write_access;
 }
 
 bool ActiveSettings::LoadSharedLibrariesEnabled()
@@ -135,7 +137,12 @@ uint32 ActiveSettings::GetPersistentId()
 
 bool ActiveSettings::IsOnlineEnabled()
 {
-	return GetConfig().account.online_enabled && Account::GetAccount(GetPersistentId()).IsValidOnlineAccount() && HasRequiredOnlineFiles();
+	if(!Account::GetAccount(GetPersistentId()).IsValidOnlineAccount())
+		return false;
+	if(!HasRequiredOnlineFiles())
+		return false;
+	NetworkService networkService = static_cast<NetworkService>(GetConfig().GetAccountNetworkService(GetPersistentId()));
+	return networkService == NetworkService::Nintendo || networkService == NetworkService::Pretendo || networkService == NetworkService::Custom;
 }
 
 bool ActiveSettings::HasRequiredOnlineFiles()
@@ -143,8 +150,9 @@ bool ActiveSettings::HasRequiredOnlineFiles()
 	return s_has_required_online_files;
 }
 
-NetworkService ActiveSettings::GetNetworkService() {
-	return static_cast<NetworkService>(GetConfig().account.active_service.GetValue());
+NetworkService ActiveSettings::GetNetworkService()
+{
+	return GetConfig().GetAccountNetworkService(GetPersistentId());
 }
 
 bool ActiveSettings::DumpShadersEnabled()
@@ -175,16 +183,6 @@ void ActiveSettings::EnableDumpTextures(bool state)
 void ActiveSettings::EnableDumpLibcurlRequests(bool state)
 {
 	s_dump_libcurl_requests = state;
-}
-
-bool ActiveSettings::FrameProfilerEnabled()
-{
-	return s_frame_profiler_enabled;
-}
-
-void ActiveSettings::EnableFrameProfiler(bool state)
-{
-	s_frame_profiler_enabled = state;
 }
 
 bool ActiveSettings::VPADDelayEnabled()
@@ -237,13 +235,25 @@ bool ActiveSettings::ForceSamplerRoundToPrecision()
 
 fs::path ActiveSettings::GetMlcPath()
 {
+	cemu_assert_debug(s_setPathsCalled);
 	if(const auto launch_mlc = LaunchSettings::GetMLCPath(); launch_mlc.has_value())
 		return launch_mlc.value();
 
 	if(const auto config_mlc = GetConfig().mlc_path.GetValue(); !config_mlc.empty())
-		return config_mlc;
+		return _utf8ToPath(config_mlc);
 
 	return GetDefaultMLCPath();
+}
+
+bool ActiveSettings::IsCustomMlcPath()
+{
+	cemu_assert_debug(s_setPathsCalled);
+	return !GetConfig().mlc_path.GetValue().empty();
+}
+
+bool ActiveSettings::IsCommandLineMlcPath()
+{
+	return LaunchSettings::GetMLCPath().has_value();
 }
 
 fs::path ActiveSettings::GetDefaultMLCPath()

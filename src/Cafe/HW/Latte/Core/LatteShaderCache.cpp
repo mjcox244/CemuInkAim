@@ -53,7 +53,7 @@ struct
 	sint32 pipelineFileCount;
 }g_shaderCacheLoaderState;
 
-FileCache* fc_shaderCacheGeneric = nullptr;	// contains hardware and Cemu version independent shader information
+FileCache* s_shaderCacheGeneric = nullptr;	// contains hardware and version independent shader information
 
 #define SHADER_CACHE_GENERIC_EXTRA_VERSION		2 // changing this constant will invalidate all hardware-independent cache files
 
@@ -62,7 +62,7 @@ FileCache* fc_shaderCacheGeneric = nullptr;	// contains hardware and Cemu versio
 #define SHADER_CACHE_TYPE_PIXEL					(2)
 
 bool LatteShaderCache_readSeparableShader(uint8* shaderInfoData, sint32 shaderInfoSize);
-void LatteShaderCache_loadVulkanPipelineCache(uint64 cacheTitleId);
+void LatteShaderCache_LoadVulkanPipelineCache(uint64 cacheTitleId);
 bool LatteShaderCache_updatePipelineLoadingProgress();
 void LatteShaderCache_ShowProgress(const std::function <bool(void)>& loadUpdateFunc, bool isPipelines);
 
@@ -178,7 +178,45 @@ uint32 LatteShaderCache_getPipelineCacheExtraVersion(uint64 titleId)
 	return extraVersion;
 }
 
-void LatteShaderCache_load()
+void LatteShaderCache_drawBackgroundImage(ImTextureID texture, int width, int height)
+{
+	// clear framebuffers and clean up
+	const auto kPopupFlags =
+			ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings |
+			ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_AlwaysAutoResize |
+			ImGuiWindowFlags_NoBringToFrontOnFocus;
+	auto& io = ImGui::GetIO();
+	ImGui::SetNextWindowPos({0, 0}, ImGuiCond_Always);
+	ImGui::SetNextWindowSize(io.DisplaySize, ImGuiCond_Always);
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0);
+	ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {0, 0});
+	if (ImGui::Begin("Background texture", nullptr, kPopupFlags))
+	{
+		if (texture)
+		{
+			float imageDisplayWidth = io.DisplaySize.x;
+			float imageDisplayHeight = height * imageDisplayWidth / width;
+
+			float paddingLeftAndRight = 0.0f;
+			float paddingTopAndBottom = (io.DisplaySize.y - imageDisplayHeight) / 2.0f;
+			if (imageDisplayHeight > io.DisplaySize.y)
+			{
+				imageDisplayHeight = io.DisplaySize.y;
+				imageDisplayWidth = width * imageDisplayHeight / height;
+				paddingLeftAndRight = (io.DisplaySize.x - imageDisplayWidth) / 2.0f;
+				paddingTopAndBottom = 0.0f;
+			}
+
+			ImGui::GetWindowDrawList()->AddImage(texture, ImVec2(paddingLeftAndRight, paddingTopAndBottom),
+												 ImVec2(io.DisplaySize.x - paddingLeftAndRight,
+														io.DisplaySize.y - paddingTopAndBottom), {0, 1}, {1, 0});
+		}
+	}
+	ImGui::End();
+	ImGui::PopStyleVar(2);
+}
+
+void LatteShaderCache_Load()
 {
 	shaderCacheScreenStats.compiledShaderCount = 0;
 	shaderCacheScreenStats.vertexShaderCount = 0;
@@ -213,78 +251,66 @@ void LatteShaderCache_load()
 	LatteShaderCache_handleDeprecatedCacheFiles(pathGeneric, pathGenericPre1_25_0, pathGenericPre1_16_0);
 	// calculate extraVersion for transferable and precompiled shader cache
 	uint32 transferableExtraVersion = SHADER_CACHE_GENERIC_EXTRA_VERSION;
-	fc_shaderCacheGeneric = FileCache::Open(pathGeneric.generic_wstring(), false, transferableExtraVersion); // legacy extra version (1.25.0 - 1.25.1b)
-	if(!fc_shaderCacheGeneric)
-		fc_shaderCacheGeneric = FileCache::Open(pathGeneric.generic_wstring(), true, LatteShaderCache_getShaderCacheExtraVersion(cacheTitleId));
-	if(!fc_shaderCacheGeneric)
+    s_shaderCacheGeneric = FileCache::Open(pathGeneric, false, transferableExtraVersion); // legacy extra version (1.25.0 - 1.25.1b)
+	if(!s_shaderCacheGeneric)
+        s_shaderCacheGeneric = FileCache::Open(pathGeneric, true, LatteShaderCache_getShaderCacheExtraVersion(cacheTitleId));
+	if(!s_shaderCacheGeneric)
 	{
 		// no shader cache available yet
-		forceLog_printfW(L"Unable to open or create shader cache file \"%s\"", pathGeneric.c_str());		
+		cemuLog_log(LogType::Force, "Unable to open or create shader cache file \"{}\"", _pathToUtf8(pathGeneric));
 		LatteShaderCache_finish();
 		return;
 	}
-	fc_shaderCacheGeneric->UseCompression(false);
+	s_shaderCacheGeneric->UseCompression(false);
 
 	// load/compile cached shaders
-	sint32 entryCount = fc_shaderCacheGeneric->GetMaximumFileIndex();
-	g_shaderCacheLoaderState.shaderFileCount = fc_shaderCacheGeneric->GetFileCount();
+	sint32 entryCount = s_shaderCacheGeneric->GetMaximumFileIndex();
+	g_shaderCacheLoaderState.shaderFileCount = s_shaderCacheGeneric->GetFileCount();
 	g_shaderCacheLoaderState.loadedShaderFiles = 0;
 
 	// get game background loading image
-	TGAFILE TVfile{};
-	g_shaderCacheLoaderState.textureTVId = nullptr;
-
-	std::string tvTexPath = fmt::format("{}/meta/bootTvTex.tga", CafeSystem::GetMlcStoragePath(CafeSystem::GetForegroundTitleId()));
-	sint32 statusTV;
-	auto fscfile = fsc_open(tvTexPath.c_str(), FSC_ACCESS_FLAG::OPEN_FILE | FSC_ACCESS_FLAG::READ_PERMISSION, &statusTV);
-	if (fscfile)
+	auto loadBackgroundTexture = [](bool isTV, ImTextureID& out)
 	{
-		uint32 size = fsc_getFileSize(fscfile);
-		if (size > 0)
+		TGAFILE file{};
+		out = nullptr;
+
+		std::string fileName = isTV ? "bootTvTex.tga" : "bootDRCTex.tga";
+
+		std::string texPath = fmt::format("{}/meta/{}", CafeSystem::GetMlcStoragePath(CafeSystem::GetForegroundTitleId()), fileName);
+		sint32 status;
+		auto fscfile = fsc_open(texPath.c_str(), FSC_ACCESS_FLAG::OPEN_FILE | FSC_ACCESS_FLAG::READ_PERMISSION, &status);
+		if (fscfile)
 		{
-			std::vector<uint8> tmpData(size);
-			fsc_readFile(fscfile, tmpData.data(), size);
-			const bool backgroundLoaded = LoadTGAFile(tmpData, &TVfile);
+			uint32 size = fsc_getFileSize(fscfile);
+			if (size > 0)
+			{
+				std::vector<uint8> tmpData(size);
+				fsc_readFile(fscfile, tmpData.data(), size);
+				const bool backgroundLoaded = LoadTGAFile(tmpData, &file);
 
-			if (backgroundLoaded)
-				g_shaderCacheLoaderState.textureTVId = g_renderer->GenerateTexture(TVfile.imageData, { TVfile.imageWidth, TVfile.imageHeight });
+				if (backgroundLoaded)
+					out = g_renderer->GenerateTexture(file.imageData, { file.imageWidth, file.imageHeight });
+			}
+
+			fsc_close(fscfile);
 		}
+	};
 
-		fsc_close(fscfile);
-	}
-	//get game background loading image for DRC
-	TGAFILE DRCfile{};
-	g_shaderCacheLoaderState.textureDRCId = nullptr;
+	loadBackgroundTexture(true, g_shaderCacheLoaderState.textureTVId);
+	loadBackgroundTexture(false, g_shaderCacheLoaderState.textureDRCId);
 
-	std::string drcTexPath = fmt::format("{}/meta/bootDRCTex.tga", CafeSystem::GetMlcStoragePath(CafeSystem::GetForegroundTitleId()));
-	sint32 statusDRC;
-	auto fscfile2 = fsc_open(drcTexPath.c_str(), FSC_ACCESS_FLAG::OPEN_FILE | FSC_ACCESS_FLAG::READ_PERMISSION, &statusDRC);
-	if (fscfile2)
-	{
-		uint32 size = fsc_getFileSize(fscfile2);
-		if (size > 0)
-		{
-			std::vector<uint8> tmpData(size);
-			fsc_readFile(fscfile2, tmpData.data(), size);
-			const bool backgroundLoaded = LoadTGAFile(tmpData, &DRCfile);
-
-			if (backgroundLoaded)
-				g_shaderCacheLoaderState.textureDRCId = g_renderer->GenerateTexture(DRCfile.imageData, { DRCfile.imageWidth, DRCfile.imageHeight });
-		}
-		fsc_close(fscfile2);
-	}
 	sint32 numLoadedShaders = 0;
 	uint32 loadIndex = 0;
 
 	auto LoadShadersUpdate = [&]() -> bool
 	{
-		if (loadIndex >= (uint32)fc_shaderCacheGeneric->GetMaximumFileIndex())
+		if (loadIndex >= (uint32)s_shaderCacheGeneric->GetMaximumFileIndex())
 			return false;
 		LatteShaderCache_updateCompileQueue(SHADER_CACHE_COMPILE_QUEUE_SIZE - 2);
 		uint64 name1;
 		uint64 name2;
 		std::vector<uint8> fileData;
-		if (!fc_shaderCacheGeneric->GetFileByIndex(loadIndex, &name1, &name2, fileData))
+		if (!s_shaderCacheGeneric->GetFileByIndex(loadIndex, &name1, &name2, fileData))
 		{
 			loadIndex++;
 			return true;
@@ -293,8 +319,8 @@ void LatteShaderCache_load()
 		if (LatteShaderCache_readSeparableShader(fileData.data(), fileData.size()) == false)
 		{
 			// something is wrong with the stored shader, remove entry from shader cache files
-			forceLog_printf("Shader cache entry %d invalid, deleting...", loadIndex);
-			fc_shaderCacheGeneric->DeleteFile({ name1, name2 });
+			cemuLog_log(LogType::Force, "Shader cache entry {} invalid, deleting...", loadIndex);
+			s_shaderCacheGeneric->DeleteFile({name1, name2 });
 		}
 		numLoadedShaders++;
 		loadIndex++;
@@ -312,85 +338,28 @@ void LatteShaderCache_load()
 	GetProcessMemoryInfo(GetCurrentProcess(), &pmc2, sizeof(PROCESS_MEMORY_COUNTERS));
 	LONGLONG totalMem2 = pmc2.PagefileUsage;
 	LONGLONG memCommited = totalMem2 - totalMem1;
-	forceLog_printf("Shader cache loaded with %d shaders. Commited mem %dMB. Took %dms", numLoadedShaders, (sint32)(memCommited/1024/1024), timeLoad);
+	cemuLog_log(LogType::Force, "Shader cache loaded with {} shaders. Commited mem {}MB. Took {}ms", numLoadedShaders, (sint32)(memCommited/1024/1024), timeLoad);
 #endif
 	LatteShaderCache_finish();
 	// if Vulkan then also load pipeline cache
 	if (g_renderer->GetType() == RendererAPI::Vulkan)
-		LatteShaderCache_loadVulkanPipelineCache(cacheTitleId);
+        LatteShaderCache_LoadVulkanPipelineCache(cacheTitleId);
 
-	// clear framebuffers and clean up
-	auto& io = ImGui::GetIO();
-	const auto kPopupFlags = ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_AlwaysAutoResize;
-	for (int i = 0; i < 2; ++i)
+
+	g_renderer->BeginFrame(true);
+	if (g_renderer->ImguiBegin(true))
 	{
-		g_renderer->BeginFrame(true);
-		if (g_renderer->ImguiBegin(true))
-		{
-			ImGui::SetNextWindowPos({ 0,0 }, ImGuiCond_Always);
-			ImGui::SetNextWindowSize(io.DisplaySize, ImGuiCond_Always);
-			ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0);
-			ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, { 0,0 });
-			if (ImGui::Begin("Background texture", nullptr, kPopupFlags))
-			{
-				if (g_shaderCacheLoaderState.textureTVId)
-				{
-					float imageDisplayWidth = io.DisplaySize.x;
-					float imageDisplayHeight = 720 * imageDisplayWidth / 1280;
-
-					float paddingLeftAndRight = 0.0f;
-					float paddingTopAndBottom = (io.DisplaySize.y - imageDisplayHeight)/2.0f;
-					if (imageDisplayHeight > io.DisplaySize.y)
-					{
-						imageDisplayHeight = io.DisplaySize.y;
-						imageDisplayWidth = 1280 * imageDisplayHeight / 720;
-						paddingLeftAndRight = (io.DisplaySize.x - imageDisplayWidth)/2.0f;
-						paddingTopAndBottom = 0.0f;
-					}
-
-					ImGui::GetWindowDrawList()->AddImage(g_shaderCacheLoaderState.textureTVId, ImVec2(paddingLeftAndRight, paddingTopAndBottom), ImVec2(io.DisplaySize.x-paddingLeftAndRight, io.DisplaySize.y-paddingTopAndBottom), { 0,1 }, { 1,0 });
-				}
-			}
-			ImGui::End();
-			ImGui::PopStyleVar(2);
-			g_renderer->ImguiEnd();
-		}
-
-		g_renderer->BeginFrame(false);
-		if (g_renderer->ImguiBegin(false)) 
-		{
-			ImGui::SetNextWindowPos({ 0,0 }, ImGuiCond_Always);
-			ImGui::SetNextWindowSize(io.DisplaySize, ImGuiCond_Always);
-			ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0);
-			ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, { 0,0 });
-
-			if (ImGui::Begin("Background texture2", nullptr, kPopupFlags))
-			{
-				if (g_shaderCacheLoaderState.textureDRCId)
-				{
-					float imageDisplayWidth = io.DisplaySize.x;
-					float imageDisplayHeight = 480 * imageDisplayWidth / 854;
-
-					float paddingLeftAndRight = 0.0f;
-					float paddingTopAndBottom = (io.DisplaySize.y - imageDisplayHeight)/2.0f;
-					if (imageDisplayHeight > io.DisplaySize.y)
-					{
-						imageDisplayHeight = io.DisplaySize.y;
-						imageDisplayWidth = 854 * imageDisplayHeight / 480;
-						paddingLeftAndRight = (io.DisplaySize.x - imageDisplayWidth)/2.0f;
-						paddingTopAndBottom = 0.0f;
-					}
-
-					ImGui::GetWindowDrawList()->AddImage(g_shaderCacheLoaderState.textureDRCId, ImVec2(paddingLeftAndRight, paddingTopAndBottom), ImVec2(io.DisplaySize.x-paddingLeftAndRight, io.DisplaySize.y-paddingTopAndBottom), { 0,1 }, { 1,0 });
-				}
-			}
-			ImGui::End();
-			ImGui::PopStyleVar(2);
-			g_renderer->ImguiEnd();
-		}
-				
-		g_renderer->SwapBuffers(true, true);
+		LatteShaderCache_drawBackgroundImage(g_shaderCacheLoaderState.textureTVId, 1280, 720);
+		g_renderer->ImguiEnd();
 	}
+	g_renderer->BeginFrame(false);
+	if (g_renderer->ImguiBegin(false))
+	{
+		LatteShaderCache_drawBackgroundImage(g_shaderCacheLoaderState.textureDRCId, 854, 480);
+		g_renderer->ImguiEnd();
+	}
+
+	g_renderer->SwapBuffers(true, true);
 
 	if (g_shaderCacheLoaderState.textureTVId)
 		g_renderer->DeleteTexture(g_shaderCacheLoaderState.textureTVId);
@@ -400,7 +369,6 @@ void LatteShaderCache_load()
 
 void LatteShaderCache_ShowProgress(const std::function <bool(void)>& loadUpdateFunc, bool isPipelines)
 {
-	auto& io = ImGui::GetIO();
 	const auto kPopupFlags = ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_AlwaysAutoResize;
 	const auto textColor = 0xFF888888;
 	
@@ -408,6 +376,8 @@ void LatteShaderCache_ShowProgress(const std::function <bool(void)>& loadUpdateF
 
 	while (true)
 	{
+        if (Latte_GetStopSignal())
+            break; // thread stop requested, cancel shader loading
 		bool r = loadUpdateFunc();
 		if (!r)
 			break;
@@ -427,35 +397,13 @@ void LatteShaderCache_ShowProgress(const std::function <bool(void)>& loadUpdateF
 		g_renderer->BeginFrame(true);
 		if (g_renderer->ImguiBegin(true))
 		{
+			auto& io = ImGui::GetIO();
+
+			// render background texture
+			LatteShaderCache_drawBackgroundImage(g_shaderCacheLoaderState.textureTVId, 1280, 720);
+
 			const auto progress_font = ImGui_GetFont(window_size.y / 32.0f); // = 24 by default
 			const auto shader_count_font = ImGui_GetFont(window_size.y / 48.0f); // = 16
-			// render background texture
-			if (g_shaderCacheLoaderState.textureTVId)
-			{
-				ImGui::SetNextWindowPos({ 0, 0 }, ImGuiCond_Always);
-				ImGui::SetNextWindowSize(io.DisplaySize, ImGuiCond_Always);
-				ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0);
-				ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, { 0, 0 });
-				if (ImGui::Begin("Background texture", nullptr, kPopupFlags | ImGuiWindowFlags_NoBringToFrontOnFocus))
-				{
-					float imageDisplayWidth = io.DisplaySize.x;
-					float imageDisplayHeight = 720 * imageDisplayWidth / 1280;
-
-					float paddingLeftAndRight = 0.0f;
-					float paddingTopAndBottom = (io.DisplaySize.y - imageDisplayHeight) / 2.0f;
-					if (imageDisplayHeight > io.DisplaySize.y)
-					{
-						imageDisplayHeight = io.DisplaySize.y;
-						imageDisplayWidth = 1280 * imageDisplayHeight / 720;
-						paddingLeftAndRight = (io.DisplaySize.x - imageDisplayWidth) / 2.0f;
-						paddingTopAndBottom = 0.0f;
-					}
-
-					ImGui::GetWindowDrawList()->AddImage(g_shaderCacheLoaderState.textureTVId, ImVec2(paddingLeftAndRight, paddingTopAndBottom), ImVec2(io.DisplaySize.x-paddingLeftAndRight, io.DisplaySize.y-paddingTopAndBottom), { 0,1 }, { 1,0 });
-				}
-				ImGui::End();
-				ImGui::PopStyleVar(2);
-			}
 
 			ImVec2 position = { window_size.x / 2.0f, window_size.y / 2.0f };
 			ImVec2 pivot = { 0.5f, 0.5f };
@@ -541,31 +489,7 @@ void LatteShaderCache_ShowProgress(const std::function <bool(void)>& loadUpdateF
 		g_renderer->BeginFrame(false);
 		if (g_renderer->ImguiBegin(false))
 		{
-			ImGui::SetNextWindowPos({ 0,0 }, ImGuiCond_Always);
-			ImGui::SetNextWindowSize(io.DisplaySize, ImGuiCond_Always);
-			ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0);
-			ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, { 0,0 });
-			if (ImGui::Begin("Background texture2", nullptr, kPopupFlags))
-			{
-				if (g_shaderCacheLoaderState.textureDRCId)
-				{
-					float imageDisplayWidth = io.DisplaySize.x;
-					float imageDisplayHeight = 480 * imageDisplayWidth / 854;
-
-					float paddingLeftAndRight = 0.0f;
-					float paddingTopAndBottom = (io.DisplaySize.y - imageDisplayHeight)/2.0f;
-					if (imageDisplayHeight > io.DisplaySize.y)
-					{
-						imageDisplayHeight = io.DisplaySize.y;
-						imageDisplayWidth = 854 * imageDisplayHeight / 480;
-						paddingLeftAndRight = (io.DisplaySize.x - imageDisplayWidth)/2.0f;
-						paddingTopAndBottom = 0.0f;
-					}
-					ImGui::GetWindowDrawList()->AddImage(g_shaderCacheLoaderState.textureDRCId, ImVec2(paddingLeftAndRight, paddingTopAndBottom), ImVec2(io.DisplaySize.x-paddingLeftAndRight, io.DisplaySize.y-paddingTopAndBottom), { 0,1 }, { 1,0 });
-				}
-			}
-			ImGui::End();
-			ImGui::PopStyleVar(2);
+			LatteShaderCache_drawBackgroundImage(g_shaderCacheLoaderState.textureDRCId, 854, 480);
 			g_renderer->ImguiEnd();
 		}
 
@@ -574,13 +498,15 @@ void LatteShaderCache_ShowProgress(const std::function <bool(void)>& loadUpdateF
 	}
 }
 
-void LatteShaderCache_loadVulkanPipelineCache(uint64 cacheTitleId)
+void LatteShaderCache_LoadVulkanPipelineCache(uint64 cacheTitleId)
 {
 	auto& pipelineCache = VulkanPipelineStableCache::GetInstance();
 	g_shaderCacheLoaderState.pipelineFileCount = pipelineCache.BeginLoading(cacheTitleId);
 	g_shaderCacheLoaderState.loadedPipelines = 0;
 	LatteShaderCache_ShowProgress(LatteShaderCache_updatePipelineLoadingProgress, true);
 	pipelineCache.EndLoading();
+    if(Latte_GetStopSignal())
+        LatteThread_Exit();
 }
 
 bool LatteShaderCache_updatePipelineLoadingProgress()
@@ -598,7 +524,7 @@ uint64 LatteShaderCache_getShaderNameInTransferableCache(uint64 baseHash, uint32
 
 void LatteShaderCache_writeSeparableVertexShader(uint64 shaderBaseHash, uint64 shaderAuxHash, uint8* fetchShader, uint32 fetchShaderSize, uint8* vertexShader, uint32 vertexShaderSize, uint32* contextRegisters, bool usesGeometryShader)
 {
-	if (!fc_shaderCacheGeneric)
+	if (!s_shaderCacheGeneric)
 		return;
 	MemStreamWriter streamWriter(128 * 1024);
 	// header
@@ -617,12 +543,12 @@ void LatteShaderCache_writeSeparableVertexShader(uint64 shaderBaseHash, uint64 s
 	// write to cache
 	uint64 shaderCacheName = LatteShaderCache_getShaderNameInTransferableCache(shaderBaseHash, SHADER_CACHE_TYPE_VERTEX);
 	std::span<uint8> dataBlob = streamWriter.getResult();
-	fc_shaderCacheGeneric->AddFileAsync({ shaderCacheName, shaderAuxHash }, dataBlob.data(), dataBlob.size());
+	s_shaderCacheGeneric->AddFileAsync({shaderCacheName, shaderAuxHash }, dataBlob.data(), dataBlob.size());
 }
 
 void LatteShaderCache_writeSeparableGeometryShader(uint64 shaderBaseHash, uint64 shaderAuxHash, uint8* geometryShader, uint32 geometryShaderSize, uint8* gsCopyShader, uint32 gsCopyShaderSize, uint32* contextRegisters, uint32* hleSpecialState, uint32 vsRingParameterCount)
 {
-	if (!fc_shaderCacheGeneric)
+	if (!s_shaderCacheGeneric)
 		return;
 	MemStreamWriter streamWriter(128 * 1024);
 	// header
@@ -642,12 +568,12 @@ void LatteShaderCache_writeSeparableGeometryShader(uint64 shaderBaseHash, uint64
 	// write to cache
 	uint64 shaderCacheName = LatteShaderCache_getShaderNameInTransferableCache(shaderBaseHash, SHADER_CACHE_TYPE_GEOMETRY);
 	std::span<uint8> dataBlob = streamWriter.getResult();
-	fc_shaderCacheGeneric->AddFileAsync({ shaderCacheName, shaderAuxHash }, dataBlob.data(), dataBlob.size());
+	s_shaderCacheGeneric->AddFileAsync({shaderCacheName, shaderAuxHash }, dataBlob.data(), dataBlob.size());
 }
 
 void LatteShaderCache_writeSeparablePixelShader(uint64 shaderBaseHash, uint64 shaderAuxHash, uint8* pixelShader, uint32 pixelShaderSize, uint32* contextRegisters, bool usesGeometryShader)
 {
-	if (!fc_shaderCacheGeneric)
+	if (!s_shaderCacheGeneric)
 		return;
 	MemStreamWriter streamWriter(128 * 1024);
 	streamWriter.writeBE<uint8>(1 | (SHADER_CACHE_TYPE_PIXEL << 4)); // version and type (shared field)
@@ -663,7 +589,7 @@ void LatteShaderCache_writeSeparablePixelShader(uint64 shaderBaseHash, uint64 sh
 	// write to cache
 	uint64 shaderCacheName = LatteShaderCache_getShaderNameInTransferableCache(shaderBaseHash, SHADER_CACHE_TYPE_PIXEL);
 	std::span<uint8> dataBlob = streamWriter.getResult();
-	fc_shaderCacheGeneric->AddFileAsync({ shaderCacheName, shaderAuxHash }, dataBlob.data(), dataBlob.size());
+	s_shaderCacheGeneric->AddFileAsync({shaderCacheName, shaderAuxHash }, dataBlob.data(), dataBlob.size());
 }
 
 void LatteShaderCache_loadOrCompileSeparableShader(LatteDecompilerShader* shader, uint64 shaderBaseHash, uint64 shaderAuxHash)
@@ -719,22 +645,22 @@ bool LatteShaderCache_readSeparableVertexShader(MemStreamReader& streamReader, u
 		return false;
 	if (streamReader.hasError() || !streamReader.isEndOfStream())
 		return false;
-	// update PS inputs (influence VS shader outputs)
+	// update PS inputs (affects VS shader outputs)
 	LatteShader_UpdatePSInputs(lcr->GetRawView());
 	// get fetch shader
 	LatteFetchShader::CacheHash fsHash = LatteFetchShader::CalculateCacheHash((uint32*)fetchShaderData.data(), fetchShaderData.size());
 	LatteFetchShader* fetchShader = LatteShaderRecompiler_createFetchShader(fsHash, lcr->GetRawView(), (uint32*)fetchShaderData.data(), fetchShaderData.size());
+	// determine decompiler options
+	LatteDecompilerOptions options;
+	LatteShader_GetDecompilerOptions(options, LatteConst::ShaderType::Vertex, usesGeometryShader);
 	// decompile vertex shader
 	LatteDecompilerOutput_t decompilerOutput{};
-	LatteFetchShader* fetchShaderList[1];
-	fetchShaderList[0] = fetchShader;
-	LatteDecompiler_DecompileVertexShader(shaderBaseHash, lcr->GetRawView(), vertexShaderData.data(), vertexShaderData.size(), fetchShaderList, 1, lcr->GetSpecialStateValues(), usesGeometryShader, &decompilerOutput);
+	LatteDecompiler_DecompileVertexShader(shaderBaseHash, lcr->GetRawView(), vertexShaderData.data(), vertexShaderData.size(), fetchShader, options, &decompilerOutput);
 	LatteDecompilerShader* vertexShader = LatteShader_CreateShaderFromDecompilerOutput(decompilerOutput, shaderBaseHash, false, shaderAuxHash, lcr->GetRawView());
 	// compile
 	LatteShader_DumpShader(shaderBaseHash, shaderAuxHash, vertexShader);
 	LatteShader_DumpRawShader(shaderBaseHash, shaderAuxHash, SHADER_DUMP_TYPE_VERTEX, vertexShaderData.data(), vertexShaderData.size());
 	LatteShaderCache_loadOrCompileSeparableShader(vertexShader, shaderBaseHash, shaderAuxHash);
-	catchOpenGLError();
 	LatteSHRC_RegisterShader(vertexShader, shaderBaseHash, shaderAuxHash);
 	return true;
 }
@@ -766,15 +692,17 @@ bool LatteShaderCache_readSeparableGeometryShader(MemStreamReader& streamReader,
 		return false;
 	// update PS inputs
 	LatteShader_UpdatePSInputs(lcr->GetRawView());
+	// determine decompiler options
+	LatteDecompilerOptions options;
+	LatteShader_GetDecompilerOptions(options, LatteConst::ShaderType::Geometry, true);
 	// decompile geometry shader
 	LatteDecompilerOutput_t decompilerOutput{};
-	LatteDecompiler_DecompileGeometryShader(shaderBaseHash, lcr->GetRawView(), geometryShaderData.data(), geometryShaderData.size(), geometryCopyShaderData.data(), geometryCopyShaderData.size(), lcr->GetSpecialStateValues(), vsRingParameterCount, &decompilerOutput);
+	LatteDecompiler_DecompileGeometryShader(shaderBaseHash, lcr->GetRawView(), geometryShaderData.data(), geometryShaderData.size(), geometryCopyShaderData.data(), geometryCopyShaderData.size(), vsRingParameterCount, options, &decompilerOutput);
 	LatteDecompilerShader* geometryShader = LatteShader_CreateShaderFromDecompilerOutput(decompilerOutput, shaderBaseHash, false, shaderAuxHash, lcr->GetRawView());
 	// compile
 	LatteShader_DumpShader(shaderBaseHash, shaderAuxHash, geometryShader);
 	LatteShader_DumpRawShader(shaderBaseHash, shaderAuxHash, SHADER_DUMP_TYPE_GEOMETRY, geometryShaderData.data(), geometryShaderData.size());
 	LatteShaderCache_loadOrCompileSeparableShader(geometryShader, shaderBaseHash, shaderAuxHash);
-	catchOpenGLError();
 	LatteSHRC_RegisterShader(geometryShader, shaderBaseHash, shaderAuxHash);
 	return true;
 }
@@ -802,15 +730,17 @@ bool LatteShaderCache_readSeparablePixelShader(MemStreamReader& streamReader, ui
 		return false;
 	// update PS inputs
 	LatteShader_UpdatePSInputs(lcr->GetRawView());
+	// determine decompiler options
+	LatteDecompilerOptions options;
+	LatteShader_GetDecompilerOptions(options, LatteConst::ShaderType::Pixel, usesGeometryShader);
 	// decompile pixel shader
 	LatteDecompilerOutput_t decompilerOutput{};
-	LatteDecompiler_DecompilePixelShader(shaderBaseHash, lcr->GetRawView(), pixelShaderData.data(), pixelShaderData.size(), lcr->GetSpecialStateValues(), usesGeometryShader, &decompilerOutput);
+	LatteDecompiler_DecompilePixelShader(shaderBaseHash, lcr->GetRawView(), pixelShaderData.data(), pixelShaderData.size(), options, &decompilerOutput);
 	LatteDecompilerShader* pixelShader = LatteShader_CreateShaderFromDecompilerOutput(decompilerOutput, shaderBaseHash, false, shaderAuxHash, lcr->GetRawView());
 	// compile
 	LatteShader_DumpShader(shaderBaseHash, shaderAuxHash, pixelShader);
 	LatteShader_DumpRawShader(shaderBaseHash, shaderAuxHash, SHADER_DUMP_TYPE_PIXEL, pixelShaderData.data(), pixelShaderData.size());
 	LatteShaderCache_loadOrCompileSeparableShader(pixelShader, shaderBaseHash, shaderAuxHash);
-	catchOpenGLError();
 	LatteSHRC_RegisterShader(pixelShader, shaderBaseHash, shaderAuxHash);
 	return true;
 }
@@ -833,6 +763,23 @@ bool LatteShaderCache_readSeparableShader(uint8* shaderInfoData, sint32 shaderIn
 	return false;
 }
 
+void LatteShaderCache_Close()
+{
+    if(s_shaderCacheGeneric)
+    {
+        delete s_shaderCacheGeneric;
+        s_shaderCacheGeneric = nullptr;
+    }
+    if (g_renderer->GetType() == RendererAPI::Vulkan)
+        RendererShaderVk::ShaderCacheLoading_Close();
+    else if (g_renderer->GetType() == RendererAPI::OpenGL)
+        RendererShaderGL::ShaderCacheLoading_Close();
+
+    // if Vulkan then also close pipeline cache
+    if (g_renderer->GetType() == RendererAPI::Vulkan)
+        VulkanPipelineStableCache::GetInstance().Close();
+}
+
 #include <wx/msgdlg.h>
 
 void LatteShaderCache_handleDeprecatedCacheFiles(fs::path pathGeneric, fs::path pathGenericPre1_25_0, fs::path pathGenericPre1_16_0)
@@ -845,10 +792,9 @@ void LatteShaderCache_handleDeprecatedCacheFiles(fs::path pathGeneric, fs::path 
 	if (hasOldCacheFiles && !hasNewCacheFiles)
 	{
 		// ask user if they want to delete or keep the old cache file
-		const auto infoMsg = L"Outdated shader cache\n\nCemu detected that the shader cache for this game is outdated\nOnly shader caches generated with Cemu 1.25.0 or above are supported\n\n"
-			"We recommend deleting the outdated cache file as it will no longer be used by Cemu";
+		auto infoMsg = _("Cemu detected that the shader cache for this game is outdated.\nOnly shader caches generated with Cemu 1.25.0 or above are supported.\n\nWe recommend deleting the outdated cache file as it will no longer be used by Cemu.");
 			
-		wxMessageDialog dialog(nullptr, _(infoMsg), _("Outdated shader cache"),
+		wxMessageDialog dialog(nullptr, infoMsg, _("Outdated shader cache"),
 			wxYES_NO | wxCENTRE | wxICON_EXCLAMATION);
 
 		dialog.SetYesNoLabels(_("Delete outdated cache file [recommended]"), _("Keep outdated cache file"));

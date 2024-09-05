@@ -26,6 +26,7 @@ struct OverlayStats
 
 	double fps{};
 	uint32 draw_calls_per_frame{};
+	uint32 fast_draw_calls_per_frame{};
 	float cpu_usage{}; // cemu cpu usage in %
 	std::vector<float> cpu_per_core; // global cpu usage in % per core
 	uint32 ram_usage{}; // ram usage in MB
@@ -80,13 +81,13 @@ void LatteOverlay_renderOverlay(ImVec2& position, ImVec2& pivot, sint32 directio
 	{
 		ImGui::SetNextWindowPos(position, ImGuiCond_Always, pivot);
 		ImGui::SetNextWindowBgAlpha(kBackgroundAlpha);
-		if (ImGui_BeginPadDistinct("Stats overlay", nullptr, kPopupFlags, pad))
+		if (ImGui::Begin("Stats overlay", nullptr, kPopupFlags))
 		{
 			if (config.overlay.fps)
 				ImGui::Text("FPS: %.2lf", g_state.fps);
 
 			if (config.overlay.drawcalls)
-				ImGui::Text("Draws/f: %d", g_state.draw_calls_per_frame);
+				ImGui::Text("Draws/f: %d (fast: %d)", g_state.draw_calls_per_frame, g_state.fast_draw_calls_per_frame);
 
 			if (config.overlay.cpu_usage)
 				ImGui::Text("CPU: %.2lf%%", g_state.cpu_usage);
@@ -141,7 +142,7 @@ void LatteOverlay_RenderNotifications(ImVec2& position, ImVec2& pivot, sint32 di
 				// active account
 				ImGui::SetNextWindowPos(position, ImGuiCond_Always, pivot);
 				ImGui::SetNextWindowBgAlpha(kBackgroundAlpha);
-				if (ImGui_BeginPadDistinct("Active account", nullptr, kPopupFlags, pad))
+				if (ImGui::Begin("Active account", nullptr, kPopupFlags))
 				{
 					ImGui::TextUnformatted((const char*)ICON_FA_USER);
 					ImGui::SameLine();
@@ -179,7 +180,7 @@ void LatteOverlay_RenderNotifications(ImVec2& position, ImVec2& pivot, sint32 di
 				{
 					ImGui::SetNextWindowPos(position, ImGuiCond_Always, pivot);
 					ImGui::SetNextWindowBgAlpha(kBackgroundAlpha);
-					if (ImGui_BeginPadDistinct("Controller profile names", nullptr, kPopupFlags, pad))
+					if (ImGui::Begin("Controller profile names", nullptr, kPopupFlags))
 					{
 						auto it = profiles.cbegin();
 						ImGui::TextUnformatted((const char*)ICON_FA_GAMEPAD);
@@ -227,7 +228,7 @@ void LatteOverlay_RenderNotifications(ImVec2& position, ImVec2& pivot, sint32 di
 		{
 			ImGui::SetNextWindowPos(position, ImGuiCond_Always, pivot);
 			ImGui::SetNextWindowBgAlpha(kBackgroundAlpha);
-			if (ImGui_BeginPadDistinct("Friends overlay", nullptr, kPopupFlags, pad))
+			if (ImGui::Begin("Friends overlay", nullptr, kPopupFlags))
 			{
 				const auto tick = tick_cached();
 				for (auto it = s_friend_list.cbegin(); it != s_friend_list.cend();)
@@ -274,7 +275,7 @@ void LatteOverlay_RenderNotifications(ImVec2& position, ImVec2& pivot, sint32 di
 
 			ImGui::SetNextWindowPos(position, ImGuiCond_Always, pivot);
 			ImGui::SetNextWindowBgAlpha(kBackgroundAlpha);
-			if (ImGui_BeginPadDistinct("Low battery overlay", nullptr, kPopupFlags, pad))
+			if (ImGui::Begin("Low battery overlay", nullptr, kPopupFlags))
 			{
 				auto it = batteries.cbegin();
 				ImGui::TextUnformatted((const char*)(s_blink_state ? ICON_FA_BATTERY_EMPTY : ICON_FA_BATTERY_QUARTER));
@@ -322,7 +323,7 @@ void LatteOverlay_RenderNotifications(ImVec2& position, ImVec2& pivot, sint32 di
 			{
 				ImGui::SetNextWindowPos(position, ImGuiCond_Always, pivot);
 				ImGui::SetNextWindowBgAlpha(kBackgroundAlpha);
-				if (ImGui_BeginPadDistinct("Compiling shaders overlay", nullptr, kPopupFlags, pad))
+				if (ImGui::Begin("Compiling shaders overlay", nullptr, kPopupFlags))
 				{
 					ImRotateStart();
 					ImGui::TextUnformatted((const char*)ICON_FA_SPINNER);
@@ -377,7 +378,7 @@ void LatteOverlay_RenderNotifications(ImVec2& position, ImVec2& pivot, sint32 di
 			{
 				ImGui::SetNextWindowPos(position, ImGuiCond_Always, pivot);
 				ImGui::SetNextWindowBgAlpha(kBackgroundAlpha);
-				if (ImGui_BeginPadDistinct("Compiling pipeline overlay", nullptr, kPopupFlags, pad))
+				if (ImGui::Begin("Compiling pipeline overlay", nullptr, kPopupFlags))
 				{
 					ImRotateStart();
 					ImGui::TextUnformatted((const char*)ICON_FA_SPINNER);
@@ -446,7 +447,7 @@ void LatteOverlay_RenderNotifications(ImVec2& position, ImVec2& pivot, sint32 di
 	{
 		ImGui::SetNextWindowPos(position, ImGuiCond_Always, pivot);
 		ImGui::SetNextWindowBgAlpha(kBackgroundAlpha);
-		if (ImGui_BeginPadDistinct("Misc notifications", nullptr, kPopupFlags, pad))
+		if (ImGui::Begin("Misc notifications", nullptr, kPopupFlags))
 		{
 			const auto tick = tick_cached();
 			for (auto it = s_misc_notifications.cbegin(); it != s_misc_notifications.cend();)
@@ -588,13 +589,14 @@ static void UpdateStats_CpuPerCore()
 	}
 }
 
-void LatteOverlay_updateStats(double fps, sint32 drawcalls)
+void LatteOverlay_updateStats(double fps, sint32 drawcalls, sint32 fastDrawcalls)
 {
 	if (GetConfig().overlay.position == ScreenPosition::kDisabled)
 		return;
 
 	g_state.fps = fps;
 	g_state.draw_calls_per_frame = drawcalls;
+	g_state.fast_draw_calls_per_frame = fastDrawcalls;
 	UpdateStats_CemuCpu();
 	UpdateStats_CpuPerCore();
 
@@ -603,43 +605,4 @@ void LatteOverlay_updateStats(double fps, sint32 drawcalls)
 
 	// update vram
 	g_renderer->GetVRAMInfo(g_state.vramUsage, g_state.vramTotal);
-}
-
-void LatteOverlay_updateStatsPerFrame()
-{
-	if (!ActiveSettings::FrameProfilerEnabled())
-		return;
-	// update frametime graph
-	uint32 frameTime_total = (uint32)PPCTimer_tscToMicroseconds(performanceMonitor.gpuTime_frameTime.getPreviousFrameValue());
-	uint32 frameTime_idle = (uint32)PPCTimer_tscToMicroseconds(performanceMonitor.gpuTime_idleTime.getPreviousFrameValue());
-	uint32 frameTime_dcStageTextures = (uint32)PPCTimer_tscToMicroseconds(performanceMonitor.gpuTime_dcStageTextures.getPreviousFrameValue());
-	uint32 frameTime_dcStageVertexMgr = (uint32)PPCTimer_tscToMicroseconds(performanceMonitor.gpuTime_dcStageVertexMgr.getPreviousFrameValue());
-	uint32 frameTime_dcStageShaderAndUniformMgr = (uint32)PPCTimer_tscToMicroseconds(performanceMonitor.gpuTime_dcStageShaderAndUniformMgr.getPreviousFrameValue());
-	uint32 frameTime_dcStageIndexMgr = (uint32)PPCTimer_tscToMicroseconds(performanceMonitor.gpuTime_dcStageIndexMgr.getPreviousFrameValue());
-	uint32 frameTime_dcStageMRT = (uint32)PPCTimer_tscToMicroseconds(performanceMonitor.gpuTime_dcStageMRT.getPreviousFrameValue());
-	uint32 frameTime_dcStageDrawcallAPI = (uint32)PPCTimer_tscToMicroseconds(performanceMonitor.gpuTime_dcStageDrawcallAPI.getPreviousFrameValue());
-	uint32 frameTime_waitForAsync = (uint32)PPCTimer_tscToMicroseconds(performanceMonitor.gpuTime_waitForAsync.getPreviousFrameValue());
-
-	// make sure total frame time is not less than it's sums
-	uint32 minimumExpectedFrametime =
-		frameTime_idle +
-		frameTime_dcStageTextures +
-		frameTime_dcStageVertexMgr +
-		frameTime_dcStageShaderAndUniformMgr +
-		frameTime_dcStageIndexMgr +
-		frameTime_dcStageMRT +
-		frameTime_dcStageDrawcallAPI +
-		frameTime_waitForAsync;
-	frameTime_total = std::max(frameTime_total, minimumExpectedFrametime);
-
-	//g_state.frametimeGraph.appendEntry();
-	//g_state.frametimeGraph.setCurrentEntryValue(0xFF404040, frameTime_idle);
-	//g_state.frametimeGraph.setCurrentEntryValue(0xFFFFC0FF, frameTime_waitForAsync);
-	//g_state.frametimeGraph.setCurrentEntryValue(0xFF000040, frameTime_dcStageTextures); // dark red
-	//g_state.frametimeGraph.setCurrentEntryValue(0xFF004000, frameTime_dcStageVertexMgr); // dark green
-	//g_state.frametimeGraph.setCurrentEntryValue(0xFFFFFF80, frameTime_dcStageShaderAndUniformMgr); // blueish
-	//g_state.frametimeGraph.setCurrentEntryValue(0xFF800080, frameTime_dcStageIndexMgr); // purple
-	//g_state.frametimeGraph.setCurrentEntryValue(0xFF00FF00, frameTime_dcStageMRT); // green
-	//g_state.frametimeGraph.setCurrentEntryValue(0xFF00FFFF, frameTime_dcStageDrawcallAPI); // yellow
-	//g_state.frametimeGraph.setCurrentEntryValue(0xFFBBBBBB, frameTime_total - minimumExpectedFrametime);
 }

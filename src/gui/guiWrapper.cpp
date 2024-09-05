@@ -3,7 +3,9 @@
 #include <gdk/gdk.h>
 #include <gdk/gdkwindow.h>
 #include <gdk/gdkx.h>
+#ifdef HAS_WAYLAND
 #include <gdk/gdkwayland.h>
+#endif
 #endif
 
 #include "gui/wxgui.h"
@@ -35,7 +37,7 @@ void _wxLaunch()
 
 void gui_create()
 {
-	SetThreadName("MainThread");
+	SetThreadName("cemu");
 #if BOOST_OS_WINDOWS
 	// on Windows wxWidgets there is a bug where wxDirDialog->ShowModal will deadlock in Windows internals somehow
 	// moving the UI thread off the main thread fixes this
@@ -91,10 +93,6 @@ void gui_updateWindowTitles(bool isIdle, bool isLoading, double fps)
 	const char* graphicMode = "[Generic]";
 	if (LatteGPUState.glVendor == GLVENDOR_AMD)
 		graphicMode = "[AMD GPU]";
-	else if (LatteGPUState.glVendor == GLVENDOR_INTEL_LEGACY)
-		graphicMode = "[Intel GPU - Legacy]";
-	else if (LatteGPUState.glVendor == GLVENDOR_INTEL_NOLEGACY)
-		graphicMode = "[Intel GPU]";
 	else if (LatteGPUState.glVendor == GLVENDOR_INTEL)
 		graphicMode = "[Intel GPU]";
 	else if (LatteGPUState.glVendor == GLVENDOR_NVIDIA)
@@ -134,7 +132,7 @@ void gui_updateWindowTitles(bool isIdle, bool isLoading, double fps)
 		g_mainFrame->AsyncSetTitle(windowText);
 		auto* pad = g_mainFrame->GetPadView();
 		if (pad)
-			pad->AsyncSetTitle(fmt::format("GamePad View - FPS: {:.02f}", fps));
+			pad->AsyncSetTitle(fmt::format("{} - FPS: {:.02f}", _("GamePad View").utf8_string(), fps));
 	}
 }
 
@@ -219,16 +217,18 @@ void gui_initHandleContextFromWxWidgetsWindow(WindowHandleInfo& handleInfoOut, c
 			cemuLog_log(LogType::Force, "Unable to get xlib display");
 		}
 	}
-	else if(GDK_IS_WAYLAND_WINDOW(gdkWindow))
+	else 
+#ifdef HAS_WAYLAND
+	if(GDK_IS_WAYLAND_WINDOW(gdkWindow))
 	{
 		handleInfoOut.backend = WindowHandleInfo::Backend::WAYLAND;
 		handleInfoOut.surface = gdk_wayland_window_get_wl_surface(gdkWindow);
 		handleInfoOut.display = gdk_wayland_display_get_wl_display(gdkDisplay);
 	}
 	else
+#endif
 	{
 		cemuLog_log(LogType::Force, "Unsuported GTK backend");
-
 	}
 #else
 	handleInfoOut.handle = wxw->GetHandle();

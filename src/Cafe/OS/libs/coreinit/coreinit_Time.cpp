@@ -22,20 +22,9 @@ namespace coreinit
 		osLib_returnFromFunction(hCPU, (uint32)osTime);
 	}
 
-	void export_OSGetTime(PPCInterpreter_t* hCPU)
+	uint64 OSGetTime()
 	{
-		uint64 osTime = coreinit_getOSTime();
-		osLib_returnFromFunction64(hCPU, osTime);
-	}
-
-	uint64 coreinit_getTimeBase_dummy()
-	{
-		return __rdtsc();
-	}
-
-	void export_OSGetSystemTimeDummy(PPCInterpreter_t* hCPU)
-	{
-		osLib_returnFromFunction64(hCPU, coreinit_getTimeBase_dummy());
+		return coreinit_getOSTime();
 	}
 
 	void export_OSGetSystemTime(PPCInterpreter_t* hCPU)
@@ -370,15 +359,14 @@ namespace coreinit
 
 	void InitializeTimeAndCalendar()
 	{
-		osLib_addFunction("coreinit", "OSGetTime", export_OSGetTime);
-		osLib_addFunction("coreinit", "OSGetSystemTime", export_OSGetSystemTimeDummy);
+		cafeExportRegister("coreinit", OSGetTime, LogType::Placeholder);
+		osLib_addFunction("coreinit", "OSGetSystemTime", export_OSGetSystemTime);
 		osLib_addFunction("coreinit", "OSGetTick", export_OSGetTick);
 		osLib_addFunction("coreinit", "OSGetSystemTick", export_OSGetSystemTick);
 
 		cafeExportRegister("coreinit", OSTicksToCalendarTime, LogType::Placeholder);
 		cafeExportRegister("coreinit", OSCalendarTimeToTicks, LogType::Placeholder);
 
-		osLib_addFunction("coreinit", "OSGetSystemTime", export_OSGetSystemTime);
 
 		//timeTest();
 	}

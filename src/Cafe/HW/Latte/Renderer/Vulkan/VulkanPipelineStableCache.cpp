@@ -59,11 +59,10 @@ uint32 VulkanPipelineStableCache::BeginLoading(uint64 cacheTitleId)
 
 	// open cache file or create it
 	cemu_assert_debug(s_cache == nullptr);
-	const uint32 cacheFileVersion = 1;
-	s_cache = FileCache::Open(pathCacheFile.generic_wstring(), true, LatteShaderCache_getPipelineCacheExtraVersion(cacheTitleId));
+	s_cache = FileCache::Open(pathCacheFile, true, LatteShaderCache_getPipelineCacheExtraVersion(cacheTitleId));
 	if (!s_cache)
 	{
-		cemuLog_log(LogType::Force, "Failed to open or create Vulkan pipeline cache file: {}", pathCacheFile.generic_string());
+		cemuLog_log(LogType::Force, "Failed to open or create Vulkan pipeline cache file: {}", _pathToUtf8(pathCacheFile));
 		return 0;
 	}
 	else
@@ -116,6 +115,15 @@ void VulkanPipelineStableCache::EndLoading()
 		m_compilationQueue.push({}); // push empty workload for every thread. Threads then will shutdown after checking for m_numCompilationThreads == 0
 	}
 	// keep cache file open for writing of new pipelines
+}
+
+void VulkanPipelineStableCache::Close()
+{
+    if(s_cache)
+    {
+        delete s_cache;
+        s_cache = nullptr;
+    }
 }
 
 struct CachedPipeline
@@ -232,7 +240,7 @@ void VulkanPipelineStableCache::LoadPipelineFromCache(std::span<uint8> fileData)
 		vertexShader = LatteSHRC_FindVertexShader(cachedPipeline->vsHash.baseHash, cachedPipeline->vsHash.auxHash);
 		if (!vertexShader)
 		{
-			forceLogDebug_printf("Vertex shader not found in cache");
+			cemuLog_logDebug(LogType::Force, "Vertex shader not found in cache");
 			return;
 		}
 	}
@@ -242,7 +250,7 @@ void VulkanPipelineStableCache::LoadPipelineFromCache(std::span<uint8> fileData)
 		geometryShader = LatteSHRC_FindGeometryShader(cachedPipeline->gsHash.baseHash, cachedPipeline->gsHash.auxHash);
 		if (!geometryShader)
 		{
-			forceLogDebug_printf("Geometry shader not found in cache");
+			cemuLog_logDebug(LogType::Force, "Geometry shader not found in cache");
 			return;
 		}
 	}
@@ -252,7 +260,7 @@ void VulkanPipelineStableCache::LoadPipelineFromCache(std::span<uint8> fileData)
 		pixelShader = LatteSHRC_FindPixelShader(cachedPipeline->psHash.baseHash, cachedPipeline->psHash.auxHash);
 		if (!pixelShader)
 		{
-			forceLogDebug_printf("Pixel shader not found in cache");
+			cemuLog_logDebug(LogType::Force, "Pixel shader not found in cache");
 			return;
 		}
 	}
@@ -292,7 +300,7 @@ void VulkanPipelineStableCache::LoadPipelineFromCache(std::span<uint8> fileData)
 	delete pipelineInfo;
 	delete lcr;
 	delete cachedPipeline;
-	VulkanRenderer::GetInstance()->releaseDestructibleObject(renderPass);
+	VulkanRenderer::GetInstance()->ReleaseDestructibleObject(renderPass);
 	s_spinlockSharedInternal.unlock();
 }
 
@@ -400,6 +408,7 @@ bool VulkanPipelineStableCache::DeserializePipeline(MemStreamReader& memReader, 
 
 int VulkanPipelineStableCache::CompilerThread()
 {
+	SetThreadName("plCacheCompiler");
 	while (m_numCompilationThreads != 0)
 	{
 		std::vector<uint8> pipelineData = m_compilationQueue.pop();
@@ -413,6 +422,7 @@ int VulkanPipelineStableCache::CompilerThread()
 
 void VulkanPipelineStableCache::WorkerThread()
 {
+	SetThreadName("plCacheWriter");
 	while (true)
 	{
 		CachedPipeline* job;

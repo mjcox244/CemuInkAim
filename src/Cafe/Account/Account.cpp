@@ -1,14 +1,13 @@
 #include "Account.h"
 #include "util/helpers/helpers.h"
-#include "gui/CemuApp.h"
 #include "util/helpers/SystemException.h"
-
+#include "util/helpers/StringHelpers.h"
 #include "config/ActiveSettings.h"
 #include "Cafe/IOSU/legacy/iosu_crypto.h"
 #include "Common/FileStream.h"
+#include <boost/random/uniform_int.hpp>
 
 #include <random>
-#include <boost/random/uniform_int.hpp>
 
 std::vector<Account> Account::s_account_list;
 
@@ -168,14 +167,14 @@ std::error_code Account::Load()
 	}
 	catch(const std::exception& ex)
 	{
-		forceLog_printf("handled error in Account::Load: %s", ex.what());
+		cemuLog_log(LogType::Force, "handled error in Account::Load: {}", ex.what());
 		return AccountErrc::ParseError;
 	}
 }
 
 std::error_code Account::Save()
 {
-	fs::path path = CemuApp::GetMLCPath(fmt::format(L"usr/save/system/act/{:08x}", m_persistent_id)).ToStdWstring();
+	fs::path path = ActiveSettings::GetMlcPath(fmt::format(L"usr/save/system/act/{:08x}", m_persistent_id));
 	if (!fs::exists(path))
 	{
 		std::error_code ec;
@@ -184,7 +183,7 @@ std::error_code Account::Save()
 			return ec;
 	}
 		
-	path /= L"account.dat";
+	path /= "account.dat";
 
 	try
 	{
@@ -302,7 +301,7 @@ void Account::SetMiiName(std::wstring_view name)
 const std::vector<Account>& Account::RefreshAccounts()
 {
 	std::vector<Account> result;
-	const fs::path path = CemuApp::GetMLCPath(L"usr/save/system/act").ToStdWstring();
+	const fs::path path = ActiveSettings::GetMlcPath("usr/save/system/act");
 	if (fs::exists(path))
 	{
 		for (const auto& it : fs::directory_iterator(path))
@@ -349,7 +348,7 @@ void Account::UpdatePersisidDat()
 		f.close();
 	}
 	else
-		forceLog_printf("Unable to save persisid.dat");
+		cemuLog_log(LogType::Force, "Unable to save persisid.dat");
 }
 
 bool Account::HasFreeAccountSlots()
@@ -417,7 +416,7 @@ fs::path Account::GetFileName(uint32 persistent_id)
 	if (persistent_id < kMinPersistendId)
 		throw std::invalid_argument(fmt::format("persistent id {:#x} is invalid", persistent_id));
 	
-	return CemuApp::GetMLCPath(fmt::format(L"usr/save/system/act/{:08x}/account.dat", persistent_id)).ToStdWstring();
+	return ActiveSettings::GetMlcPath(fmt::format("usr/save/system/act/{:08x}/account.dat", persistent_id));
 }
 
 OnlineValidator Account::ValidateOnlineFiles() const
@@ -462,15 +461,14 @@ OnlineValidator Account::ValidateOnlineFiles() const
 
 void Account::ParseFile(class FileStream* file)
 {
-	std::vector<std::string> buffer;
-	
-	std::string tmp;
-	while (file->readLine(tmp))
-		buffer.emplace_back(tmp);
-	for (const auto& s : buffer)
+	std::vector<uint8> buffer;
+	buffer.resize(file->GetSize());
+	if( file->readData(buffer.data(), buffer.size()) != buffer.size())
+		throw std::system_error(AccountErrc::ParseError);
+	for (const auto& s : StringHelpers::StringLineIterator(buffer))
 	{
 		std::string_view view = s;
-		const auto find = view.find(L'=');
+		const auto find = view.find('=');
 		if (find == std::string_view::npos)
 			continue;
 

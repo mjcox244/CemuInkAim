@@ -11,11 +11,6 @@ endif()
 
 if(MSVC)
 	add_compile_definitions(WIN32_LEAN_AND_MEAN CURL_STATICLIB)
-	#add_compile_definitions(VK_USE_PLATFORM_WIN32_KHR)
-	# _CRT_SECURE_NO_WARNINGS
-	# _WINSOCK_DEPRECATED_NO_WARNINGS
-	# _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING
-	# _SILENCE_ALL_CXX17_DEPRECATION_WARNINGS
 elseif(UNIX)
 	if(APPLE)
 		add_compile_definitions(
@@ -27,10 +22,11 @@ elseif(UNIX)
 		add_compile_definitions(
 			VK_USE_PLATFORM_XLIB_KHR # legacy. Do we need to support XLIB surfaces?
 			VK_USE_PLATFORM_XCB_KHR
-			VK_USE_PLATFORM_WAYLAND_KHR
 		)
+		if (ENABLE_WAYLAND)
+			add_compile_definitions(VK_USE_PLATFORM_WAYLAND_KHR)
+		endif()
 	endif()
-	add_compile_options(-maes)
 	# warnings
 	if(CMAKE_C_COMPILER_ID STREQUAL "Clang")
 		add_compile_options(-Wno-ambiguous-reversed-operator)
@@ -60,10 +56,17 @@ add_executable(CemuBin
 	mainLLE.cpp
 )
 
+if(MSVC AND MSVC_VERSION EQUAL 1940)
+	# workaround for an msvc issue on VS 17.10 where generated ILK files are too large
+	# see https://developercommunity.visualstudio.com/t/After-updating-to-VS-1710-the-size-of-/10665511
+	set_target_properties(CemuBin PROPERTIES LINK_FLAGS "/INCREMENTAL:NO")
+endif()
+
 if(WIN32)
 	target_sources(CemuBin PRIVATE
 	resource/cemu.rc
-)
+	../dist/windows/cemu.manifest
+	)
 endif()
 
 set_property(TARGET CemuBin PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
@@ -81,9 +84,11 @@ if (MACOS_BUNDLE)
 	set(MACOSX_BUNDLE_BUNDLE_NAME "Cemu")
 	set(MACOSX_BUNDLE_SHORT_VERSION_STRING ${CMAKE_PROJECT_VERSION})
 	set(MACOSX_BUNDLE_BUNDLE_VERSION ${CMAKE_PROJECT_VERSION})
-	set(MACOSX_BUNDLE_COPYRIGHT "Copyright © 2022 Cemu Project")
+	set(MACOSX_BUNDLE_COPYRIGHT "Copyright © 2024 Cemu Project")
 
 	set(MACOSX_BUNDLE_CATEGORY "public.app-category.games")
+ 	set(MACOSX_MINIMUM_SYSTEM_VERSION "12.0")
+  	set(MACOSX_BUNDLE_TYPE_EXTENSION "wua")
 
 	set_target_properties(CemuBin PROPERTIES
 		MACOSX_BUNDLE true
@@ -97,10 +102,11 @@ if (MACOS_BUNDLE)
 	endforeach(folder)
 
 	add_custom_command (TARGET CemuBin POST_BUILD
-		COMMAND ${CMAKE_COMMAND} ARGS -E copy "/usr/local/lib/libMoltenVK.dylib" "${CMAKE_SOURCE_DIR}/bin/${OUTPUT_NAME}.app/Contents/Frameworks/libMoltenVK.dylib")
-
-	add_custom_command (TARGET CemuBin POST_BUILD
-		COMMAND bash -c "install_name_tool -add_rpath @executable_path/../Frameworks ${CMAKE_SOURCE_DIR}/bin/${OUTPUT_NAME}.app/Contents/MacOS/${OUTPUT_NAME}")
+		COMMAND ${CMAKE_COMMAND} ARGS -E copy "/usr/local/lib/libMoltenVK.dylib" "${CMAKE_SOURCE_DIR}/bin/${OUTPUT_NAME}.app/Contents/Frameworks/libMoltenVK.dylib"
+		COMMAND ${CMAKE_COMMAND} ARGS -E copy "${CMAKE_BINARY_DIR}/vcpkg_installed/x64-osx/lib/libusb-1.0.0.dylib" "${CMAKE_SOURCE_DIR}/bin/${OUTPUT_NAME}.app/Contents/Frameworks/libusb-1.0.0.dylib"
+		COMMAND ${CMAKE_COMMAND} ARGS -E copy "${CMAKE_SOURCE_DIR}/src/resource/update.sh" "${CMAKE_SOURCE_DIR}/bin/${OUTPUT_NAME}.app/Contents/MacOS/update.sh"
+		COMMAND bash -c "install_name_tool -add_rpath @executable_path/../Frameworks ${CMAKE_SOURCE_DIR}/bin/${OUTPUT_NAME}.app/Contents/MacOS/${OUTPUT_NAME}"
+		COMMAND bash -c "install_name_tool -change /Users/runner/work/Cemu/Cemu/build/vcpkg_installed/x64-osx/lib/libusb-1.0.0.dylib @executable_path/../Frameworks/libusb-1.0.0.dylib ${CMAKE_SOURCE_DIR}/bin/${OUTPUT_NAME}.app/Contents/MacOS/${OUTPUT_NAME}")
 endif()
 
 set_target_properties(CemuBin PROPERTIES

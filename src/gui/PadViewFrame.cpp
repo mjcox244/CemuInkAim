@@ -20,18 +20,24 @@
 
 extern WindowInfo g_window_info;
 
+#define PAD_MIN_WIDTH  320
+#define PAD_MIN_HEIGHT 180
+
 PadViewFrame::PadViewFrame(wxFrame* parent)
-	: wxFrame(nullptr, wxID_ANY, _("GamePad View"), wxDefaultPosition, wxSize(854, 480), wxMINIMIZE_BOX | wxMAXIMIZE_BOX | wxSYSTEM_MENU | wxCAPTION | wxCLIP_CHILDREN | wxRESIZE_BORDER | wxCLOSE_BOX | wxWANTS_CHARS)
+	: wxFrame(nullptr, wxID_ANY, _("GamePad View"), wxDefaultPosition, wxDefaultSize, wxMINIMIZE_BOX | wxMAXIMIZE_BOX | wxSYSTEM_MENU | wxCAPTION | wxCLIP_CHILDREN | wxRESIZE_BORDER | wxCLOSE_BOX | wxWANTS_CHARS)
 {
 	gui_initHandleContextFromWxWidgetsWindow(g_window_info.window_pad, this);
-	
+
 	SetIcon(wxICON(M_WND_ICON128));
 	wxWindow::EnableTouchEvents(wxTOUCH_PAN_GESTURES);
 
-	SetMinClientSize({ 320, 180 });
+	SetMinClientSize({ PAD_MIN_WIDTH, PAD_MIN_HEIGHT });
 
 	SetPosition({ g_window_info.restored_pad_x, g_window_info.restored_pad_y });
-	SetSize({ g_window_info.restored_pad_width, g_window_info.restored_pad_height });
+	if (g_window_info.restored_pad_width >= PAD_MIN_WIDTH && g_window_info.restored_pad_height >= PAD_MIN_HEIGHT)
+		SetClientSize({ g_window_info.restored_pad_width, g_window_info.restored_pad_height });
+	else
+		SetClientSize(wxSize(854, 480));
 
 	if (g_window_info.pad_maximized)
 		Maximize();
@@ -90,6 +96,14 @@ void PadViewFrame::InitializeRenderCanvas()
 	SendSizeEvent();
 }
 
+void PadViewFrame::DestroyCanvas()
+{
+	if(!m_render_canvas)
+		return;
+	m_render_canvas->Destroy();
+	m_render_canvas = nullptr;
+}
+
 void PadViewFrame::OnSizeEvent(wxSizeEvent& event)
 {
 	if (!IsMaximized() && !IsFullScreen())
@@ -139,7 +153,7 @@ void PadViewFrame::OnKeyUp(wxKeyEvent& event)
 	const auto code = event.GetKeyCode();
 	if (code == WXK_ESCAPE)
 		ShowFullScreen(false);
-	else if (code == WXK_RETURN && event.AltDown())
+	else if (code == WXK_RETURN && event.AltDown() || code == WXK_F11)
 		ShowFullScreen(!IsFullScreen());
 }
 

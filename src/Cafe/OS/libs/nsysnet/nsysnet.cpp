@@ -13,6 +13,7 @@
 #define WSAESHUTDOWN ESHUTDOWN
 #define WSAECONNABORTED ECONNABORTED
 #define WSAHOST_NOT_FOUND EAI_NONAME
+#define WSAENOTCONN ENOTCONN
 
 #define GETLASTERR errno
 
@@ -35,14 +36,46 @@
 
 #define WU_SO_REUSEADDR		0x0004
 #define WU_SO_KEEPALIVE		0x0008
+#define WU_SO_DONTROUTE		0x0010
+#define WU_SO_BROADCAST		0x0020
+#define WU_SO_LINGER		0x0080
+#define WU_SO_OOBINLINE		0x0100
+#define WU_SO_TCPSACK		0x0200
 #define WU_SO_WINSCALE		0x0400
 #define WU_SO_SNDBUF		0x1001
 #define WU_SO_RCVBUF		0x1002
+#define WU_SO_SNDLOWAT		0x1003
+#define WU_SO_RCVLOWAT		0x1004
 #define WU_SO_LASTERROR		0x1007
+#define WU_SO_TYPE			0x1008
+#define WU_SO_HOPCNT		0x1009
+#define WU_SO_MAXMSG		0x1010
+#define WU_SO_RXDATA		0x1011
+#define WU_SO_TXDATA		0x1012
+#define WU_SO_MYADDR		0x1013
 #define WU_SO_NBIO			0x1014
+#define WU_SO_BIO			0x1015
 #define WU_SO_NONBLOCK		0x1016
+#define WU_SO_UNKNOWN1019	0x1019 // tcp related
+#define WU_SO_UNKNOWN101A	0x101A // tcp related
+#define WU_SO_UNKNOWN101B	0x101B // tcp related
+#define WU_SO_NOSLOWSTART	0x4000
+#define WU_SO_RUSRBUF		0x10000
 
-#define WU_TCP_NODELAY		0x2004
+#define WU_TCP_ACKDELAYTIME		0x2001
+#define WU_TCP_NOACKDELAY		0x2002
+#define WU_TCP_MAXSEG			0x2003
+#define WU_TCP_NODELAY			0x2004
+#define WU_TCP_UNKNOWN			0x2005 // amount of mss received before sending an ack
+
+#define WU_IP_TOS				3
+#define WU_IP_TTL				4
+#define WU_IP_MULTICAST_IF		9
+#define WU_IP_MULTICAST_TTL		10
+#define WU_IP_MULTICAST_LOOP	11
+#define WU_IP_ADD_MEMBERSHIP	12
+#define WU_IP_DROP_MEMBERSHIP	13
+#define WU_IP_UNKNOWN			14
 
 #define WU_SOL_SOCKET		-1 // this constant differs from Win32 socket API
 
@@ -53,8 +86,10 @@
 #define WU_SO_SUCCESS		0x0000
 #define WU_SO_EWOULDBLOCK	0x0006
 #define WU_SO_ECONNRESET	0x0008
+#define WU_SO_ENOTCONN		0x0009
 #define WU_SO_EINVAL		0x000B
 #define WU_SO_EINPROGRESS	0x0016
+#define WU_SO_EAFNOSUPPORT  0x0021
 
 #define WU_SO_ESHUTDOWN		0x000F
 
@@ -73,23 +108,29 @@ void nsysnetExport_socket_lib_init(PPCInterpreter_t* hCPU)
 	osLib_returnFromFunction(hCPU, 0); // 0 -> Success
 }
 
-uint32* __gh_errno_ptr()
+void nsysnetExport_socket_lib_finish(PPCInterpreter_t* hCPU)
 {
-	OSThread_t* osThread = coreinitThread_getCurrentThreadDepr(PPCInterpreter_getCurrentInstance());
-	return &osThread->context.error;
+	sockLibReady = false;
+#if BOOST_OS_WINDOWS
+	WSACleanup();
+#endif // BOOST_OS_WINDOWS
+	osLib_returnFromFunction(hCPU, 0); // 0 -> Success
+}
+
+static uint32be* __gh_errno_ptr()
+{
+	OSThread_t* osThread = coreinit::OSGetCurrentThread();
+	return &osThread->context.ghs_errno;
 }
 
 void _setSockError(sint32 errCode)
 {
-	// todo -> Call __gh_errno_ptr and then write 32bit error code
-	*(uint32*)__gh_errno_ptr() = _swapEndianU32(errCode);
-	//coreinitData->ghsErrno = _swapEndianU32(errCode);
+	*(uint32be*)__gh_errno_ptr() = (uint32)errCode;
 }
 
 sint32 _getSockError()
 {
-	return (sint32)_swapEndianU32(*(uint32*)__gh_errno_ptr());
-	//return (sint32)_swapEndianU32(coreinitData->ghsErrno);
+	return (sint32)*(uint32be*)__gh_errno_ptr();
 }
 
 // error translation modes for _translateError
@@ -141,8 +182,11 @@ sint32 _translateError(sint32 returnCode, sint32 wsaError, sint32 mode = _ERROR_
 	case WSAESHUTDOWN:
 		_setSockError(WU_SO_ESHUTDOWN);
 		break;
+	case WSAENOTCONN:
+		_setSockError(WU_SO_ENOTCONN);
+		break;
 	default:
-		cemuLog_logDebug(LogType::Force, "Unhandled wsaError {}\n", wsaError);
+		cemuLog_logDebug(LogType::Force, "Unhandled wsaError {}", wsaError);
 		_setSockError(99999); // unhandled error
 	}
 	return -1;
@@ -150,7 +194,7 @@ sint32 _translateError(sint32 returnCode, sint32 wsaError, sint32 mode = _ERROR_
 
 void nsysnetExport_socketlasterr(PPCInterpreter_t* hCPU)
 {
-	socketLog_printf("socketlasterr() -> %d", _getSockError());
+	cemuLog_logDebug(LogType::Socket, "socketlasterr() -> {}", _getSockError());
 	osLib_returnFromFunction(hCPU, _getSockError());
 }
 
@@ -227,7 +271,7 @@ WUSOCKET nsysnet_createVirtualSocket(sint32 family, sint32 type, sint32 protocol
 	sint32 s = _getFreeSocketHandle();
 	if (s == 0)
 	{
-		forceLogDebug_printf("Ran out of socket handles");
+		cemuLog_logDebug(LogType::Force, "Ran out of socket handles");
 		cemu_assert(false);
 	}
 	virtualSocket_t* vs = (virtualSocket_t*)malloc(sizeof(virtualSocket_t));
@@ -253,13 +297,13 @@ WUSOCKET nsysnet_createVirtualSocket(sint32 family, sint32 type, sint32 protocol
 
 WUSOCKET nsysnet_createVirtualSocketFromExistingSocket(SOCKET existingSocket)
 {
-	forceLogDebug_printf("nsysnet_createVirtualSocketFromExistingSocket - incomplete");
+	cemuLog_logDebug(LogType::Force, "nsysnet_createVirtualSocketFromExistingSocket - incomplete");
 
 
 	sint32 s = _getFreeSocketHandle();
 	if (s == 0)
 	{
-		forceLogDebug_printf("Ran out of socket handles");
+		cemuLog_logDebug(LogType::Force, "Ran out of socket handles");
 		cemu_assert(false);
 	}
 	virtualSocket_t* vs = (virtualSocket_t*)malloc(sizeof(virtualSocket_t));
@@ -333,7 +377,7 @@ sint32 nsysnet_getVirtualSocketHandleFromHostHandle(SOCKET s)
 
 void nsysnetExport_socket(PPCInterpreter_t* hCPU)
 {
-	socketLog_printf("socket(%d,%d,%d)", hCPU->gpr[3], hCPU->gpr[4], hCPU->gpr[5]);
+	cemuLog_log(LogType::Socket, "socket({},{},{})", hCPU->gpr[3], hCPU->gpr[4], hCPU->gpr[5]);
 	ppcDefineParamS32(family, 0);
 	ppcDefineParamS32(type, 1);
 	ppcDefineParamS32(protocol, 2);
@@ -349,7 +393,7 @@ void nsysnetExport_socket(PPCInterpreter_t* hCPU)
 	// check family param
 	if (family != WU_AF_INET)
 	{
-		forceLogDebug_printf("socket(): Unsupported family");
+		cemuLog_logDebug(LogType::Force, "socket(): Unsupported family");
 		// todo - error code
 		osLib_returnFromFunction(hCPU, -1);
 		return;
@@ -357,7 +401,7 @@ void nsysnetExport_socket(PPCInterpreter_t* hCPU)
 	// check type param
 	if (type != WU_SOCK_STREAM && type != WU_SOCK_DGRAM)
 	{
-		forceLogDebug_printf("socket(): Unsupported family");
+		cemuLog_logDebug(LogType::Force, "socket(): Unsupported family");
 		// todo - error code
 		osLib_returnFromFunction(hCPU, -1);
 		return;
@@ -365,26 +409,26 @@ void nsysnetExport_socket(PPCInterpreter_t* hCPU)
 
 	if (protocol != WU_IPPROTO_TCP && protocol != WU_IPPROTO_UDP && protocol != WU_IPPROTO_IP)
 	{
-		forceLogDebug_printf("socket(): Unsupported protocol");
+		cemuLog_logDebug(LogType::Force, "socket(): Unsupported protocol");
 		// todo - error code
 		osLib_returnFromFunction(hCPU, -1);
 		return;
 	}
 
 	WUSOCKET s = nsysnet_createVirtualSocket(family, type, protocol);
-	socketLog_printf("Created socket handle %d", s);
+	cemuLog_log(LogType::Socket, "Created socket handle {}", s);
 	osLib_returnFromFunction(hCPU, s);
 }
 
 void nsysnetExport_mw_socket(PPCInterpreter_t* hCPU)
 {
-	socketLog_printf("mw_socket");
+	cemuLog_log(LogType::Socket, "mw_socket");
 	nsysnetExport_socket(hCPU);
 }
 
 void nsysnetExport_shutdown(PPCInterpreter_t* hCPU)
 {
-	socketLog_printf("shutdown(%d,%d)", hCPU->gpr[3], hCPU->gpr[4]);
+	cemuLog_log(LogType::Socket, "shutdown({},{})", hCPU->gpr[3], hCPU->gpr[4]);
 	ppcDefineParamS32(s, 0);
 	ppcDefineParamS32(how, 1);
 
@@ -422,7 +466,7 @@ void nsysnetExport_shutdown(PPCInterpreter_t* hCPU)
 
 void nsysnetExport_socketclose(PPCInterpreter_t* hCPU)
 {
-	socketLog_printf("socketclose(%d)", hCPU->gpr[3]);
+	cemuLog_log(LogType::Socket, "socketclose({})", hCPU->gpr[3]);
 	ppcDefineParamS32(s, 0);
 
 	virtualSocket_t* vs = nsysnet_getVirtualSocketObject(s);
@@ -449,7 +493,7 @@ sint32 _socket_nonblock(SOCKET s, u_long mode)
 }
 void nsysnetExport_setsockopt(PPCInterpreter_t* hCPU)
 {
-	socketLog_printf("setsockopt(%d,0x%x,0x%05x,0x%08x,%d)", hCPU->gpr[3], hCPU->gpr[4], hCPU->gpr[5], hCPU->gpr[6], hCPU->gpr[7]);
+	cemuLog_log(LogType::Socket, "setsockopt({},0x{:x},0x{:05x},0x{:08x},{})", hCPU->gpr[3], hCPU->gpr[4], hCPU->gpr[5], hCPU->gpr[6], hCPU->gpr[7]);
 	ppcDefineParamS32(s, 0);
 	ppcDefineParamS32(level, 1);
 	ppcDefineParamS32(optname, 2);
@@ -478,9 +522,9 @@ void nsysnetExport_setsockopt(PPCInterpreter_t* hCPU)
 				if (r != 0)
 					cemu_assert_suspicious();
 			}
-			else if (optname == WU_SO_NBIO)
+			else if (optname == WU_SO_NBIO || optname == WU_SO_BIO)
 			{
-				// similar to WU_SO_NONBLOCK but always sets non-blocking mode regardless of option value
+				// similar to WU_SO_NONBLOCK but always sets blocking (_BIO) or non-blocking (_NBIO) mode regardless of option value
 				if (optlen == 4)
 				{
 					sint32 optvalLE = _swapEndianU32(*(uint32*)optval);
@@ -491,9 +535,10 @@ void nsysnetExport_setsockopt(PPCInterpreter_t* hCPU)
 				}
 				else
 					cemu_assert_suspicious();
-				u_long mode = 1;
+				bool setNonBlocking = optname == WU_SO_NBIO;
+				u_long mode = setNonBlocking ? 1 : 0;
 				_socket_nonblock(vs->s,  mode);
-				vs->isNonBlocking = true;
+				vs->isNonBlocking = setNonBlocking;
 			}
 			else if (optname == WU_SO_NONBLOCK)
 			{
@@ -514,7 +559,7 @@ void nsysnetExport_setsockopt(PPCInterpreter_t* hCPU)
 			}
 			else if (optname == WU_SO_RCVBUF)
 			{
-				socketLog_printf("Set receive buffer size to 0x%08x", _swapEndianU32(*(uint32*)optval));
+				cemuLog_log(LogType::Socket, "Set receive buffer size to 0x{:08x}", _swapEndianU32(*(uint32*)optval));
 				if (optlen != 4)
 					assert_dbg();
 				sint32 optvalLE = _swapEndianU32(*(uint32*)optval);
@@ -524,7 +569,7 @@ void nsysnetExport_setsockopt(PPCInterpreter_t* hCPU)
 			}
 			else if (optname == WU_SO_SNDBUF)
 			{
-				socketLog_printf("Set send buffer size to 0x%08x", _swapEndianU32(*(uint32*)optval));
+				cemuLog_log(LogType::Socket, "Set send buffer size to 0x{:08x}", _swapEndianU32(*(uint32*)optval));
 				if (optlen != 4)
 					assert_dbg();
 				sint32 optvalLE = _swapEndianU32(*(uint32*)optval);
@@ -534,7 +579,7 @@ void nsysnetExport_setsockopt(PPCInterpreter_t* hCPU)
 			}
 			else
 			{
-				forceLogDebug_printf("setsockopt(): Unsupported optname 0x%08x", optname);
+				cemuLog_logDebug(LogType::Force, "setsockopt(WU_SOL_SOCKET): Unsupported optname 0x{:08x}", optname);
 			}
 		}
 		else if (level == WU_IPPROTO_TCP)
@@ -550,18 +595,22 @@ void nsysnetExport_setsockopt(PPCInterpreter_t* hCPU)
 					assert_dbg();
 			}
 			else
-				assert_dbg();
+			{
+				cemuLog_logDebug(LogType::Force, "setsockopt(WU_IPPROTO_TCP): Unsupported optname 0x{:08x}", optname);
+			}
 		}
 		else if (level == WU_IPPROTO_IP)
 		{
 			hostLevel = IPPROTO_IP;
-			if (optname == 0xC)
+			if (optname == WU_IP_MULTICAST_IF || optname == WU_IP_MULTICAST_TTL ||
+				optname == WU_IP_MULTICAST_LOOP || optname == WU_IP_ADD_MEMBERSHIP ||
+				optname == WU_IP_DROP_MEMBERSHIP)
 			{
-				// unknown
+				cemuLog_logDebug(LogType::Socket, "todo: setsockopt() for multicast");
 			}
-			else if( optname == 0x4 )
+			else if(optname == WU_IP_TTL || optname == WU_IP_TOS)
 			{
-				forceLogDebug_printf("setsockopt with unsupported opname 4 for IPPROTO_IP");
+				cemuLog_logDebug(LogType::Force, "setsockopt(WU_IPPROTO_IP): Unsupported optname 0x{:08x}", optname);
 			}
 			else
 				assert_dbg();
@@ -575,7 +624,7 @@ void nsysnetExport_setsockopt(PPCInterpreter_t* hCPU)
 
 void nsysnetExport_getsockopt(PPCInterpreter_t* hCPU)
 {
-	socketLog_printf("getsockopt(%d,0x%x,0x%05x,0x%08x,0x%08x)", hCPU->gpr[3], hCPU->gpr[4], hCPU->gpr[5], hCPU->gpr[6], hCPU->gpr[7]);
+	cemuLog_log(LogType::Socket, "getsockopt({},0x{:x},0x{:05x},0x{:08x},0x{:08x})", hCPU->gpr[3], hCPU->gpr[4], hCPU->gpr[5], hCPU->gpr[6], hCPU->gpr[7]);
 	ppcDefineParamS32(s, 0);
 	ppcDefineParamS32(level, 1);
 	ppcDefineParamS32(optname, 2);
@@ -635,14 +684,34 @@ void nsysnetExport_getsockopt(PPCInterpreter_t* hCPU)
 			*(uint32*)optval = _swapEndianU32(optvalLE);
 			// used by Lost Reavers after some loading screens
 		}
+		else if (optname == WU_SO_TYPE)
+		{
+			if (memory_readU32(optlenMPTR) != 4)
+				assert_dbg();
+			int optvalLE = 0;
+			socklen_t optlenLE = 4;
+			memory_writeU32(optlenMPTR, 4);
+			*(uint32*)optval = _swapEndianU32(vs->type);
+			r = WU_SO_SUCCESS;
+		}
+        else if (optname == WU_SO_NONBLOCK)
+        {
+            if (memory_readU32(optlenMPTR) != 4)
+                assert_dbg();
+            int optvalLE = 0;
+            socklen_t optlenLE = 4;
+            memory_writeU32(optlenMPTR, 4);
+            *(uint32*)optval = _swapEndianU32(vs->isNonBlocking ? 1 : 0);
+            r = WU_SO_SUCCESS;
+        }
 		else
 		{
-			cemu_assert_debug(false);
+			cemuLog_logDebug(LogType::Force, "getsockopt(WU_SOL_SOCKET): Unsupported optname 0x{:08x}", optname);
 		}
 	}
 	else
 	{
-		cemu_assert_debug(false);
+		cemuLog_logDebug(LogType::Force, "getsockopt(): Unsupported level 0x{:08x}", level);
 	}
 
 	osLib_returnFromFunction(hCPU, r);
@@ -652,7 +721,7 @@ void nsysnetExport_inet_aton(PPCInterpreter_t* hCPU)
 {
 	ppcDefineParamStr(ip, 0);
 	ppcDefineParamStructPtr(addr, wu_in_addr, 1);
-	socketLog_printf("inet_aton(\"%s\",0x%08x)", ip, hCPU->gpr[4]);
+	cemuLog_log(LogType::Socket, "inet_aton(\"{}\",0x{:08x})", ip, hCPU->gpr[4]);
 
 	// _parse_ipad -> todo
 	sint32 d0, d1, d2, d3;
@@ -686,7 +755,7 @@ void nsysnetExport_inet_pton(PPCInterpreter_t* hCPU)
 	
 	if (af != 2)
 	{
-		forceLog_printf("inet_pton() only supports AF_INET");
+		cemuLog_log(LogType::Force, "inet_pton() only supports AF_INET");
 		osLib_returnFromFunction(hCPU, 0);
 		return;
 	}
@@ -703,21 +772,44 @@ void nsysnetExport_inet_pton(PPCInterpreter_t* hCPU)
 		invalidIp = true;
 	if (d3 < 0 || d3 > 255)
 		invalidIp = true;
-#ifdef CEMU_DEBUG_ASSERT
-	if (invalidIp)
-		assert_dbg();
-#endif
 	if (invalidIp)
 	{
-		socketLog_printf("inet_pton(%d, \"%s\", 0x%08x) -> Invalid ip", af, ip, hCPU->gpr[5]);
+		cemuLog_log(LogType::Socket, "inet_pton({}, \"{}\", 0x{:08x}) -> Invalid ip", af, ip, hCPU->gpr[5]);
+        _setSockError(WU_SO_EAFNOSUPPORT);
 		osLib_returnFromFunction(hCPU, 0); // 0 -> invalid address
 		return;
 	}
 
 	addr->wu_s_addr = _swapEndianU32((d0 << 24) | (d1 << 16) | (d2 << 8) | (d3 << 0));
-	socketLog_printf("inet_pton(%d, \"%s\", 0x%08x) -> Ok", af, ip, hCPU->gpr[5]);
+	cemuLog_log(LogType::Socket, "inet_pton({}, \"{}\", 0x{:08x}) -> Ok", af, ip, hCPU->gpr[5]);
 
 	osLib_returnFromFunction(hCPU, 1); // 1 -> success
+}
+
+namespace nsysnet
+{
+    const char* inet_ntop(sint32 af, const void* src, char* dst, uint32 size)
+    {
+        if( af != WU_AF_INET)
+        {
+            // set error
+            _setSockError(WU_SO_EAFNOSUPPORT);
+            return nullptr;
+        }
+        const uint8* ip = (const uint8*)src;
+        char buf[32];
+        sprintf(buf, "%d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3]);
+        size_t bufLen = strlen(buf);
+        if( (bufLen+1) > size )
+        {
+            // set error
+            _setSockError(WU_SO_EAFNOSUPPORT);
+            return nullptr;
+        }
+        strcpy(dst, buf);
+        cemuLog_log(LogType::Socket, "inet_ntop -> {}", buf);
+        return dst;
+    }
 }
 
 MEMPTR<char> _ntoa_tempString = nullptr;
@@ -725,7 +817,7 @@ MEMPTR<char> _ntoa_tempString = nullptr;
 void nsysnetExport_inet_ntoa(PPCInterpreter_t* hCPU)
 {
 	ppcDefineParamStructPtr(addr, wu_in_addr, 0);
-	socketLog_printf("inet_ntoa(0x%08x)", hCPU->gpr[3]);
+	cemuLog_log(LogType::Socket, "inet_ntoa(0x{:08x})", hCPU->gpr[3]);
 
 	if (_ntoa_tempString == nullptr)
 		_ntoa_tempString = (char*)memory_getPointerFromVirtualOffset(OSAllocFromSystem(64, 4));
@@ -737,35 +829,35 @@ void nsysnetExport_inet_ntoa(PPCInterpreter_t* hCPU)
 
 void nsysnetExport_htons(PPCInterpreter_t* hCPU)
 {
-	socketLog_printf("htons(0x%04x)", hCPU->gpr[3]);
+	cemuLog_log(LogType::Socket, "htons(0x{:04x})", hCPU->gpr[3]);
 	ppcDefineParamU32(v, 0);
 	osLib_returnFromFunction(hCPU, v); // return value as-is
 }
 
 void nsysnetExport_htonl(PPCInterpreter_t* hCPU)
 {
-	socketLog_printf("htonl(0x%08x)", hCPU->gpr[3]);
+	cemuLog_log(LogType::Socket, "htonl(0x{:08x})", hCPU->gpr[3]);
 	ppcDefineParamU32(v, 0);
 	osLib_returnFromFunction(hCPU, v); // return value as-is
 }
 
 void nsysnetExport_ntohs(PPCInterpreter_t* hCPU)
 {
-	socketLog_printf("ntohs(0x%04x)", hCPU->gpr[3]);
+	cemuLog_log(LogType::Socket, "ntohs(0x{:04x})", hCPU->gpr[3]);
 	ppcDefineParamU32(v, 0);
 	osLib_returnFromFunction(hCPU, v); // return value as-is
 }
 
 void nsysnetExport_ntohl(PPCInterpreter_t* hCPU)
 {
-	socketLog_printf("ntohl(0x%08x)", hCPU->gpr[3]);
+	cemuLog_log(LogType::Socket, "ntohl(0x{:08x})", hCPU->gpr[3]);
 	ppcDefineParamU32(v, 0);
 	osLib_returnFromFunction(hCPU, v); // return value as-is
 }
 
 void nsysnetExport_bind(PPCInterpreter_t* hCPU)
 {
-	socketLog_printf("bind(%d,0x%08x,%d)", hCPU->gpr[3], hCPU->gpr[4], hCPU->gpr[5]);
+	cemuLog_log(LogType::Socket, "bind({},0x{:08x},{})", hCPU->gpr[3], hCPU->gpr[4], hCPU->gpr[5]);
 	ppcDefineParamS32(s, 0);
 	ppcDefineParamStructPtr(addr, struct wu_sockaddr, 1);
 	ppcDefineParamS32(len, 2);
@@ -791,7 +883,7 @@ void nsysnetExport_bind(PPCInterpreter_t* hCPU)
 		r = _translateError(hr, GETLASTERR);
 
 
-		socketLog_printf("bind address: %d.%d.%d.%d:%d result: %d", addr->sa_data[2], addr->sa_data[3], addr->sa_data[4], addr->sa_data[5], _swapEndianU16(*(uint16*)addr->sa_data), hr);
+		cemuLog_log(LogType::Socket, "bind address: {}.{}.{}.{}:{} result: {}", addr->sa_data[2], addr->sa_data[3], addr->sa_data[4], addr->sa_data[5], _swapEndianU16(*(uint16*)addr->sa_data), hr);
 
 	}
 
@@ -800,7 +892,7 @@ void nsysnetExport_bind(PPCInterpreter_t* hCPU)
 
 void nsysnetExport_listen(PPCInterpreter_t* hCPU)
 {
-	socketLog_printf("listen(%d,%d)", hCPU->gpr[3], hCPU->gpr[4]);
+	cemuLog_log(LogType::Socket, "listen({},{})", hCPU->gpr[3], hCPU->gpr[4]);
 	ppcDefineParamS32(s, 0);
 	ppcDefineParamS32(queueSize, 1);
 
@@ -823,7 +915,7 @@ void nsysnetExport_listen(PPCInterpreter_t* hCPU)
 
 void nsysnetExport_accept(PPCInterpreter_t* hCPU)
 {
-	socketLog_printf("accept(%d,0x%08x,0x%08x)", hCPU->gpr[3], hCPU->gpr[4], hCPU->gpr[5]);
+	cemuLog_log(LogType::Socket, "accept({},0x{:08x},0x{:08x})", hCPU->gpr[3], hCPU->gpr[4], hCPU->gpr[5]);
 	ppcDefineParamS32(s, 0);
 	ppcDefineParamStructPtr(addr, struct wu_sockaddr, 1);
 	ppcDefineParamMPTR(lenMPTR, 2);
@@ -839,7 +931,7 @@ void nsysnetExport_accept(PPCInterpreter_t* hCPU)
 
 	if (memory_readU32(lenMPTR) != 16)
 	{
-		forceLog_printf("invalid sockaddr len in accept()");
+		cemuLog_log(LogType::Force, "invalid sockaddr len in accept()");
 		cemu_assert_debug(false);
 		osLib_returnFromFunction(hCPU, 0);
 		return;
@@ -864,7 +956,7 @@ void nsysnetExport_accept(PPCInterpreter_t* hCPU)
 	else
 	{
 		// blocking accept is not supported yet
-		forceLog_printf("blocking accept() not supported");
+		cemuLog_log(LogType::Force, "blocking accept() not supported");
 		cemu_assert_debug(false);
 	}
 
@@ -873,7 +965,7 @@ void nsysnetExport_accept(PPCInterpreter_t* hCPU)
 
 void nsysnetExport_connect(PPCInterpreter_t* hCPU)
 {
-	socketLog_printf("connect(%d,0x%08x,%d)", hCPU->gpr[3], hCPU->gpr[4], hCPU->gpr[5]);
+	cemuLog_log(LogType::Socket, "connect({},0x{:08x},{})", hCPU->gpr[3], hCPU->gpr[4], hCPU->gpr[5]);
 	ppcDefineParamS32(s, 0);
 	ppcDefineParamStructPtr(addr, struct wu_sockaddr, 1);
 	ppcDefineParamS32(len, 2);
@@ -892,7 +984,7 @@ void nsysnetExport_connect(PPCInterpreter_t* hCPU)
 	hostAddr.sa_family = _swapEndianU16(addr->sa_family);
 	memcpy(hostAddr.sa_data, addr->sa_data, 14);
 	sint32 hr = connect(vs->s, &hostAddr, sizeof(sockaddr));
-	forceLog_printf("Attempt connect to %d.%d.%d.%d:%d", (sint32)(uint8)hostAddr.sa_data[2], (sint32)(uint8)hostAddr.sa_data[3], (sint32)(uint8)hostAddr.sa_data[4], (sint32)(uint8)hostAddr.sa_data[5], _swapEndianU16(*(uint16*)hostAddr.sa_data+0));
+	cemuLog_log(LogType::Force, "Attempt connect to {}.{}.{}.{}:{}", (sint32)(uint8)hostAddr.sa_data[2], (sint32)(uint8)hostAddr.sa_data[3], (sint32)(uint8)hostAddr.sa_data[4], (sint32)(uint8)hostAddr.sa_data[5], _swapEndianU16(*(uint16*)hostAddr.sa_data+0));
 
 	r = _translateError(hr, GETLASTERR, _ERROR_MODE_CONNECT);
 
@@ -907,7 +999,7 @@ void _setSocketSendRecvNonBlockingMode(SOCKET s, bool isNonBlocking)
 
 void nsysnetExport_send(PPCInterpreter_t* hCPU)
 {
-	socketLog_printf("send(%d,0x%08x,%d,0x%x)", hCPU->gpr[3], hCPU->gpr[4], hCPU->gpr[5], hCPU->gpr[6]);
+	cemuLog_log(LogType::Socket, "send({},0x{:08x},{},0x{:x})", hCPU->gpr[3], hCPU->gpr[4], hCPU->gpr[5], hCPU->gpr[6]);
 	ppcDefineParamS32(s, 0);
 	ppcDefineParamStr(msg, 1);
 	ppcDefineParamS32(len, 2);
@@ -930,7 +1022,7 @@ void nsysnetExport_send(PPCInterpreter_t* hCPU)
 		assert_dbg();
 
 	sint32 hr = send(vs->s, msg, len, hostFlags);
-	socketLog_printf("Sent %d bytes", hr);
+	cemuLog_log(LogType::Socket, "Sent {} bytes", hr);
 	_translateError(hr <= 0 ? -1 : 0, GETLASTERR);
 	r = hr;
 
@@ -939,7 +1031,7 @@ void nsysnetExport_send(PPCInterpreter_t* hCPU)
 
 void nsysnetExport_recv(PPCInterpreter_t* hCPU)
 {
-	socketLog_printf("recv(%d,0x%08x,%d,0x%x) LR: 0x%08x Thread: 0x%08x", hCPU->gpr[3], hCPU->gpr[4], hCPU->gpr[5], hCPU->gpr[6], hCPU->spr.LR, coreinitThread_getCurrentThreadMPTRDepr(hCPU));
+	cemuLog_log(LogType::Socket, "recv({},0x{:08x},{},0x{:x})", hCPU->gpr[3], hCPU->gpr[4], hCPU->gpr[5], hCPU->gpr[6]);
 	ppcDefineParamS32(s, 0);
 	ppcDefineParamStr(msg, 1);
 	ppcDefineParamS32(len, 2);
@@ -993,7 +1085,7 @@ void nsysnetExport_recv(PPCInterpreter_t* hCPU)
 	_translateError(hr <= 0 ? -1 : 0, GETLASTERR);
 	if (requestIsNonBlocking != vs->isNonBlocking)
 		_setSocketSendRecvNonBlockingMode(vs->s, vs->isNonBlocking);
-	socketLog_printf("Received %d bytes", hr);
+	cemuLog_log(LogType::Socket, "Received {} bytes", hr);
 	r = hr;
 
 	osLib_returnFromFunction(hCPU, r);
@@ -1069,14 +1161,14 @@ void _translateFDSetRev(struct wu_fd_set* fdset, fd_set* hostSet, sint32 nfds)
 
 void nsysnetExport_select(PPCInterpreter_t* hCPU)
 {
-	socketLog_printf("select(%d,0x%08x,0x%08x,0x%08x,0x%08x) LR 0x%08x Thread 0x%08x", hCPU->gpr[3], hCPU->gpr[4], hCPU->gpr[5], hCPU->gpr[6], hCPU->gpr[7], hCPU->spr.LR, coreinitThread_getCurrentThreadMPTRDepr(hCPU));
+	cemuLog_log(LogType::Socket, "select({},0x{:08x},0x{:08x},0x{:08x},0x{:08x})", hCPU->gpr[3], hCPU->gpr[4], hCPU->gpr[5], hCPU->gpr[6], hCPU->gpr[7]);
 	ppcDefineParamS32(nfds, 0);
 	ppcDefineParamStructPtr(readfds, struct wu_fd_set, 1);
 	ppcDefineParamStructPtr(writefds, struct wu_fd_set, 2);
 	ppcDefineParamStructPtr(exceptfds, struct wu_fd_set, 3);
 	ppcDefineParamStructPtr(timeOut, struct wu_timeval, 4);
 
-	//socketLog_printf("rm %08x wm %08x em %08x", readfds ? _swapEndianU32(readfds->mask) : 0, writefds ? _swapEndianU32(writefds->mask) : 0, exceptfds ? _swapEndianU32(exceptfds->mask) : 0);
+	//cemuLog_log(LogType::Socket, "rm {:08x} wm {:08x} em {:08x}", readfds ? _swapEndianU32(readfds->mask) : 0, writefds ? _swapEndianU32(writefds->mask) : 0, exceptfds ? _swapEndianU32(exceptfds->mask) : 0);
 
 	sint32 r = 0;
 
@@ -1089,7 +1181,7 @@ void nsysnetExport_select(PPCInterpreter_t* hCPU)
 		if (timeOut == NULL || (timeOut->tv_sec == 0 && timeOut->tv_usec == 0))
 		{
 			// return immediately
-			socketLog_printf("select returned immediately because of empty fdsets without timeout");
+			cemuLog_log(LogType::Socket, "select returned immediately because of empty fdsets without timeout");
 			osLib_returnFromFunction(hCPU, 0);
 			return;
 		}
@@ -1098,7 +1190,7 @@ void nsysnetExport_select(PPCInterpreter_t* hCPU)
 			//// empty select with timeout is not allowed
 			//_setSockError(WU_SO_EINVAL);
 			//osLib_returnFromFunction(hCPU, -1);
-			//socketLog_printf("select returned SO_EINVAL because of empty fdsets with timeout");
+			//cemuLog_log(LogType::Socket, "select returned SO_EINVAL because of empty fdsets with timeout");
 
 			// when fd sets are empty but timeout is set, then just wait and do nothing?
 			// Lost Reavers seems to expect this case to return 0 (it hardcodes empty fd sets and timeout comes from curl_multi_timeout)
@@ -1107,7 +1199,7 @@ void nsysnetExport_select(PPCInterpreter_t* hCPU)
 			tv.tv_sec = timeOut->tv_sec;
 			tv.tv_usec = timeOut->tv_usec;
 			select(0, nullptr, nullptr, nullptr, &tv);
-			socketLog_printf("select returned 0 because of empty fdsets with timeout");
+			cemuLog_log(LogType::Socket, "select returned 0 because of empty fdsets with timeout");
 			osLib_returnFromFunction(hCPU, 0);
 			
 			return;
@@ -1117,6 +1209,14 @@ void nsysnetExport_select(PPCInterpreter_t* hCPU)
 
 
 	timeval tv = { 0 };
+
+	if (timeOut == NULL)
+	{
+		// return immediately
+		cemuLog_log(LogType::Socket, "select returned immediately because of null timeout");
+		osLib_returnFromFunction(hCPU, 0);
+		return;
+	}
 
 	uint64 msTimeout = (_swapEndianU32(timeOut->tv_usec) / 1000) + (_swapEndianU32(timeOut->tv_sec) * 1000);
 	uint32 startTime = GetTickCount();
@@ -1129,7 +1229,7 @@ void nsysnetExport_select(PPCInterpreter_t* hCPU)
 		r = select(hostnfds + 1, readfds ? &_readfds : NULL, writefds ? &_writefds : NULL, exceptfds ? &_exceptfds : NULL, &tv);
 		if (r < 0)
 		{
-			forceLogDebug_printf("select() failed");
+			cemuLog_logDebug(LogType::Force, "select() failed");
 			// timeout
 			_translateError(r, GETLASTERR);
 			//_setSockError(WU_SO_SUCCESS);
@@ -1164,8 +1264,8 @@ void nsysnetExport_select(PPCInterpreter_t* hCPU)
 		}
 		else
 		{
-			// socketLog_printf("select returned %d. Read %d Write %d Except %d", r, _readfds.fd_count, _writefds.fd_count, _exceptfds.fd_count);
-			socketLog_printf("select returned %d.", r);
+			// cemuLog_log(LogType::Socket, "select returned {}. Read {} Write {} Except {}", r, _readfds.fd_count, _writefds.fd_count, _exceptfds.fd_count);
+			cemuLog_log(LogType::Socket, "select returned {}.", r);
 
 			_translateFDSetRev(readfds, &_readfds, nfds);
 			_translateFDSetRev(writefds, &_writefds, nfds);
@@ -1173,19 +1273,19 @@ void nsysnetExport_select(PPCInterpreter_t* hCPU)
 			break;
 		}
 	}
-	//forceLog_printf("selectEndTime %d", timeGetTime());
+	//cemuLog_log(LogType::Force, "selectEndTime {}", timeGetTime());
 
 
 	//extern int select(int nfds, fd_set *readfds, fd_set *writefds, fd_set *exceptfds,
 	//	struct timeval *timeout);
 
-	socketLog_printf("select returned %d", r);
+	cemuLog_log(LogType::Socket, "select returned {}", r);
 	osLib_returnFromFunction(hCPU, r);
 }
 
 void nsysnetExport_getsockname(PPCInterpreter_t* hCPU)
 {
-	socketLog_printf("getsockname(%d,0x%08x,0x%08x)", hCPU->gpr[3], hCPU->gpr[4], hCPU->gpr[5]);
+	cemuLog_log(LogType::Socket, "getsockname({},0x{:08x},0x{:08x})", hCPU->gpr[3], hCPU->gpr[4], hCPU->gpr[5]);
 
 	ppcDefineParamS32(s, 0);
 	ppcDefineParamStructPtr(addr, struct wu_sockaddr, 1);
@@ -1270,7 +1370,7 @@ void nsysnetExport_gethostbyname(PPCInterpreter_t* hCPU)
 {
 	ppcDefineParamStr(name, 0);
 
-	socketLog_printf("gethostbyname(\"%s\")", name);
+	cemuLog_log(LogType::Socket, "gethostbyname(\"{}\")", name);
 
 	hostent* he = gethostbyname(name);
 	if (he == NULL)
@@ -1318,12 +1418,12 @@ void nsysnetExport_gethostbyaddr(PPCInterpreter_t* hCPU)
 
 	sint32 maxNumEntries = 31;
 
-	socketLog_printf("gethostbyaddr(\"%s\", %d, %d)", addr, len, type);
+	cemuLog_log(LogType::Socket, "gethostbyaddr(\"{}\", {}, {})", addr, len, type);
 
 	hostent* he = gethostbyaddr(addr, len, type);
 	if (he == nullptr)
 	{
-		socketLog_printf("gethostbyaddr(\"%s\", %d, %d) failed", addr, len, type);
+		cemuLog_log(LogType::Socket, "gethostbyaddr(\"{}\", {}, {}) failed", addr, len, type);
 		osLib_returnFromFunction(hCPU, MPTR_NULL);
 		return;
 	}
@@ -1344,7 +1444,7 @@ void nsysnetExport_gethostbyaddr(PPCInterpreter_t* hCPU)
 	}
 	else
 	{
-		forceLog_printf("he->h_name not set or name too long");
+		cemuLog_log(LogType::Force, "he->h_name not set or name too long");
 		strcpy(_staticHostentName.GetPtr(), "");
 	}
 	// setup wuHostent address list
@@ -1376,7 +1476,7 @@ void nsysnetExport_getaddrinfo(PPCInterpreter_t* hCPU)
 	ppcDefineParamStructPtr(hints, struct wu_addrinfo, 2);
 	ppcDefineParamMPTR(results, 3);
 
-	socketLog_printf("getaddrinfo(\"%s\",0x%08x,0x%08x,0x%08x)", nodeName, hCPU->gpr[4], hCPU->gpr[5], hCPU->gpr[6]);
+	cemuLog_log(LogType::Socket, "getaddrinfo(\"{}\",0x{:08x},0x{:08x},0x{:08x})", nodeName, hCPU->gpr[4], hCPU->gpr[5], hCPU->gpr[6]);
 	
 	sint32 r = 0;
 
@@ -1402,7 +1502,7 @@ void nsysnetExport_getaddrinfo(PPCInterpreter_t* hCPU)
 	sint32 hr = getaddrinfo(nodeName, serviceName, &hint, &result);
 	if (hr != 0)
 	{
-		socketLog_printf("getaddrinfo failed with error %d", hr);
+		cemuLog_log(LogType::Socket, "getaddrinfo failed with error {}", hr);
 		switch (hr)
 		{
 		case WSAHOST_NOT_FOUND:
@@ -1411,7 +1511,7 @@ void nsysnetExport_getaddrinfo(PPCInterpreter_t* hCPU)
 		default:
 			// unhandled error
 			cemu_assert_debug(false);
-			socketLog_printf("getaddrinfo unhandled error code");
+			cemuLog_log(LogType::Socket, "getaddrinfo unhandled error code");
 			r = 1;
 			break;
 		}
@@ -1486,7 +1586,7 @@ void nsysnetExport_getaddrinfo(PPCInterpreter_t* hCPU)
 
 void nsysnetExport_recvfrom(PPCInterpreter_t* hCPU)
 {
-	socketLog_printf("recvfrom(%d,0x%08x,%d,0x%x) LR: 0x%08x Thread: 0x%08x", hCPU->gpr[3], hCPU->gpr[4], hCPU->gpr[5], hCPU->gpr[6], hCPU->spr.LR, coreinitThread_getCurrentThreadMPTRDepr(hCPU));
+	cemuLog_log(LogType::Socket, "recvfrom({},0x{:08x},{},0x{:x},0x{:x},0x{:x})", hCPU->gpr[3], hCPU->gpr[4], hCPU->gpr[5], hCPU->gpr[6], hCPU->gpr[7], hCPU->gpr[8]);
 	ppcDefineParamS32(s, 0);
 	ppcDefineParamStr(msg, 1);
 	ppcDefineParamS32(len, 2);
@@ -1515,8 +1615,8 @@ void nsysnetExport_recvfrom(PPCInterpreter_t* hCPU)
 	if (vs->isNonBlocking)
 		requestIsNonBlocking = vs->isNonBlocking;
 
-	socklen_t fromLenHost = *fromLen;
 	sockaddr fromAddrHost;
+	socklen_t fromLenHost = sizeof(fromAddrHost);
 	sint32 wsaError = 0;
 
 	while( true )
@@ -1557,10 +1657,14 @@ void nsysnetExport_recvfrom(PPCInterpreter_t* hCPU)
 				wsaError = GETLASTERR;
 				if (r < 0)
 					cemu_assert_debug(false);
-				forceLogDebug_printf("recvfrom returned %d bytes", r);
-				*fromLen = fromLenHost;
-				fromAddr->sa_family = _swapEndianU16(fromAddrHost.sa_family);
-				memcpy(fromAddr->sa_data, fromAddrHost.sa_data, 14);
+				cemuLog_logDebug(LogType::Force, "recvfrom returned {} bytes", r);
+
+				// fromAddr and fromLen can be NULL
+				if (fromAddr && fromLen) {
+					*fromLen = fromLenHost;
+					fromAddr->sa_family = _swapEndianU16(fromAddrHost.sa_family);
+					memcpy(fromAddr->sa_data, fromAddrHost.sa_data, 14);
+				}
 
 				_setSockError(0);
 				osLib_returnFromFunction(hCPU, r);
@@ -1610,9 +1714,12 @@ void nsysnetExport_recvfrom(PPCInterpreter_t* hCPU)
 		assert_dbg();
 	}
 
-	*fromLen = fromLenHost;
-	fromAddr->sa_family = _swapEndianU16(fromAddrHost.sa_family);
-	memcpy(fromAddr->sa_data, fromAddrHost.sa_data, 14);
+	// fromAddr and fromLen can be NULL
+	if (fromAddr && fromLen) {
+		*fromLen = fromLenHost;
+		fromAddr->sa_family = _swapEndianU16(fromAddrHost.sa_family);
+		memcpy(fromAddr->sa_data, fromAddrHost.sa_data, 14);
+	}
 
 	_translateError(r <= 0 ? -1 : 0, wsaError);
 
@@ -1622,7 +1729,7 @@ void nsysnetExport_recvfrom(PPCInterpreter_t* hCPU)
 
 void nsysnetExport_recvfrom_ex(PPCInterpreter_t* hCPU)
 {
-	socketLog_printf("recvfrom_ex(%d,0x%08x,%d,0x%x,0x%08x,0x%08x,0x%08x,%d) LR: 0x%08x Thread: 0x%08x", hCPU->gpr[3], hCPU->gpr[4], hCPU->gpr[5], hCPU->gpr[6], hCPU->gpr[7], hCPU->gpr[8], hCPU->gpr[9], hCPU->gpr[10], hCPU->spr.LR, coreinitThread_getCurrentThreadMPTRDepr(hCPU));
+	cemuLog_log(LogType::Socket, "recvfrom_ex({},0x{:08x},{},0x{:x},0x{:08x},0x{:08x},0x{:08x},{})", hCPU->gpr[3], hCPU->gpr[4], hCPU->gpr[5], hCPU->gpr[6], hCPU->gpr[7], hCPU->gpr[8], hCPU->gpr[9], hCPU->gpr[10]);
 	ppcDefineParamS32(s, 0);
 	ppcDefineParamStr(msg, 1);
 	ppcDefineParamS32(len, 2);
@@ -1744,7 +1851,7 @@ void _convertSockaddrToHostFormat(wu_sockaddr* sockaddru, sockaddr* sockaddrHost
 
 void nsysnetExport_sendto(PPCInterpreter_t* hCPU)
 {
-	socketLog_printf("sendto(%d,0x%08x,%d,0x%x) LR: 0x%08x Thread: 0x%08x", hCPU->gpr[3], hCPU->gpr[4], hCPU->gpr[5], hCPU->gpr[6], hCPU->spr.LR, coreinitThread_getCurrentThreadMPTRDepr(hCPU));
+	cemuLog_log(LogType::Socket, "sendto({},0x{:08x},{},0x{:x})", hCPU->gpr[3], hCPU->gpr[4], hCPU->gpr[5], hCPU->gpr[6]);
 	ppcDefineParamS32(s, 0);
 	ppcDefineParamStr(msg, 1);
 	ppcDefineParamS32(len, 2);
@@ -1814,7 +1921,7 @@ void nsysnetExport_sendto(PPCInterpreter_t* hCPU)
 
 void nsysnetExport_sendto_multi(PPCInterpreter_t* hCPU)
 {
-	socketLog_printf("sendto_multi(%d,0x%08x,0x%08x,%d) LR: 0x%08x Thread: 0x%08x", hCPU->gpr[3], hCPU->gpr[4], hCPU->gpr[5], hCPU->gpr[6], hCPU->spr.LR, coreinitThread_getCurrentThreadMPTRDepr(hCPU));
+	cemuLog_log(LogType::Socket, "sendto_multi({},0x{:08x},0x{:08x},{})", hCPU->gpr[3], hCPU->gpr[4], hCPU->gpr[5], hCPU->gpr[6]);
 	ppcDefineParamS32(s, 0);
 	ppcDefineParamStr(data, 1);
 	ppcDefineParamS32(dataLen, 2);
@@ -1861,7 +1968,7 @@ typedef struct
 
 void nsysnetExport_sendto_multi_ex(PPCInterpreter_t* hCPU)
 {
-	socketLog_printf("sendto_multi_ex(%d,0x%08x,0x%08x,%d) LR: 0x%08x Thread: 0x%08x", hCPU->gpr[3], hCPU->gpr[4], hCPU->gpr[5], hCPU->gpr[6], hCPU->spr.LR, coreinitThread_getCurrentThreadMPTRDepr(hCPU));
+	cemuLog_log(LogType::Socket, "sendto_multi_ex({},0x{:08x},0x{:08x},{})", hCPU->gpr[3], hCPU->gpr[4], hCPU->gpr[5], hCPU->gpr[6]);
 	ppcDefineParamS32(s, 0);
 	ppcDefineParamU32(flags, 1);
 	ppcDefineParamStructPtr(multiBuf, sendtomultiBuffer_t, 2);
@@ -1934,7 +2041,7 @@ namespace nsysnet
 
 		uint32 nsslHandle = (uint32)g_nsslInternalStates.size() - 1;
 
-		forceLogDebug_printf("NSSLCreateContext(0x%x) -> 0x%x", version, nsslHandle);
+		cemuLog_logDebug(LogType::Force, "NSSLCreateContext(0x{:x}) -> 0x{:x}", version, nsslHandle);
 
 		osLib_returnFromFunction(hCPU, nsslHandle);
 	}
@@ -1943,7 +2050,7 @@ namespace nsysnet
 	{
 		ppcDefineParamU32(nsslHandle, 0);
 		ppcDefineParamU32(clientPKI, 1);
-		forceLogDebug_printf("NSSLSetClientPKI(0x%x, 0x%x)", nsslHandle, clientPKI);
+		cemuLog_logDebug(LogType::Force, "NSSLSetClientPKI(0x{:x}, 0x{:x})", nsslHandle, clientPKI);
 
 		if (g_nsslInternalStates.size() <= nsslHandle || g_nsslInternalStates[nsslHandle].destroyed)
 		{
@@ -1959,7 +2066,7 @@ namespace nsysnet
 	{
 		ppcDefineParamU32(nsslHandle, 0);
 		ppcDefineParamU32(serverPKI, 1);
-		forceLogDebug_printf("NSSLAddServerPKI(0x%x, 0x%x)", nsslHandle, serverPKI);
+		cemuLog_logDebug(LogType::Force, "NSSLAddServerPKI(0x{:x}, 0x{:x})", nsslHandle, serverPKI);
 
 		if (g_nsslInternalStates.size() <= nsslHandle || g_nsslInternalStates[nsslHandle].destroyed)
 		{
@@ -1978,7 +2085,7 @@ namespace nsysnet
 		ppcDefineParamS32(certLen, 2);
 		ppcDefineParamS32(certType, 3);
 
-		forceLogDebug_printf("NSSLAddServerPKIExternal(0x%x, 0x%08x, 0x%x, %d)", nsslHandle, certData.GetMPTR(), certLen, certType);
+		cemuLog_logDebug(LogType::Force, "NSSLAddServerPKIExternal(0x{:x}, 0x{:08x}, 0x{:x}, {})", nsslHandle, certData.GetMPTR(), certLen, certType);
 		if (g_nsslInternalStates.size() <= nsslHandle || g_nsslInternalStates[nsslHandle].destroyed)
 		{
 			osLib_returnFromFunction(hCPU, NSSL_INVALID_CTX);
@@ -1996,7 +2103,7 @@ namespace nsysnet
 		ppcDefineParamU32(groupMask, 1);
 		ppcDefineParamMEMPTR(validCountOut, sint32, 2);
 		ppcDefineParamMEMPTR(invalidCountOut, sint32, 3);
-		forceLogDebug_printf("NSSLAddServerPKIGroups(0x%x, 0x%x, 0x%08x, 0x%08x)", nsslHandle, groupMask, validCountOut.GetMPTR(), invalidCountOut.GetMPTR());
+		cemuLog_logDebug(LogType::Force, "NSSLAddServerPKIGroups(0x{:x}, 0x{:x}, 0x{:08x}, 0x{:08x})", nsslHandle, groupMask, validCountOut.GetMPTR(), invalidCountOut.GetMPTR());
 
 		if (g_nsslInternalStates.size() <= nsslHandle || g_nsslInternalStates[nsslHandle].destroyed)
 		{
@@ -2030,7 +2137,7 @@ namespace nsysnet
 	void export_NSSLDestroyContext(PPCInterpreter_t* hCPU)
 	{
 		ppcDefineParamU32(nsslHandle, 0);
-		forceLogDebug_printf("NSSLDestroyContext(0x%x)", nsslHandle);
+		cemuLog_logDebug(LogType::Force, "NSSLDestroyContext(0x{:x})", nsslHandle);
 
 		if (g_nsslInternalStates.size() <= nsslHandle || g_nsslInternalStates[nsslHandle].destroyed)
 		{
@@ -2113,13 +2220,23 @@ namespace nsysnet
 
 }
 
-
+namespace nsysnet
+{
+    void Initialize()
+    {
+        cafeExportRegister("nsysnet", inet_ntop, LogType::Socket);
+    }
+}
 
 // register nsysnet functions
 void nsysnet_load()
 {
-	
-	osLib_addFunction("nsysnet", "socket_lib_init", nsysnetExport_socket_lib_init);
+    nsysnet::Initialize();
+
+    // the below code is the old way of registering API which is deprecated
+
+    osLib_addFunction("nsysnet", "socket_lib_init", nsysnetExport_socket_lib_init);
+	osLib_addFunction("nsysnet", "socket_lib_finish", nsysnetExport_socket_lib_finish);
 	
 	// socket API
 	osLib_addFunction("nsysnet", "socket", nsysnetExport_socket);

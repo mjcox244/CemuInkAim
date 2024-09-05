@@ -10,6 +10,7 @@ add_library(CemuCafe
   Filesystem/fscDeviceRedirect.cpp
   Filesystem/fscDeviceWua.cpp
   Filesystem/fscDeviceWud.cpp
+  Filesystem/fscDeviceWuhb.cpp
   Filesystem/fsc.h
   Filesystem/FST/FST.cpp
   Filesystem/FST/FST.h
@@ -18,6 +19,9 @@ add_library(CemuCafe
   Filesystem/FST/KeyCache.h
   Filesystem/WUD/wud.cpp
   Filesystem/WUD/wud.h
+  Filesystem/WUHB/RomFSStructs.h
+  Filesystem/WUHB/WUHBReader.cpp
+  Filesystem/WUHB/WUHBReader.h
   GamePatch.cpp
   GamePatch.h
   GameProfile/GameProfile.cpp
@@ -38,6 +42,10 @@ add_library(CemuCafe
   HW/Espresso/Debugger/Debugger.h
   HW/Espresso/Debugger/DebugSymbolStorage.cpp
   HW/Espresso/Debugger/DebugSymbolStorage.h
+  HW/Espresso/Debugger/GDBStub.h
+  HW/Espresso/Debugger/GDBStub.cpp
+  HW/Espresso/Debugger/GDBBreakpoints.cpp
+  HW/Espresso/Debugger/GDBBreakpoints.h
   HW/Espresso/EspressoISA.h
   HW/Espresso/Interpreter/PPCInterpreterALU.hpp
   HW/Espresso/Interpreter/PPCInterpreterFPU.cpp
@@ -210,6 +218,8 @@ add_library(CemuCafe
   HW/SI/SI.cpp
   HW/SI/si.h
   HW/VI/VI.cpp
+  IOSU/ccr_nfc/iosu_ccr_nfc.cpp
+  IOSU/ccr_nfc/iosu_ccr_nfc.h
   IOSU/fsa/fsa_types.h
   IOSU/fsa/iosu_fsa.cpp
   IOSU/fsa/iosu_fsa.h
@@ -237,6 +247,8 @@ add_library(CemuCafe
   IOSU/nn/iosu_nn_service.h
   IOSU/PDM/iosu_pdm.cpp
   IOSU/PDM/iosu_pdm.h
+  IOSU/ODM/iosu_odm.cpp
+  IOSU/ODM/iosu_odm.h
   OS/common/OSCommon.cpp
   OS/common/OSCommon.h
   OS/common/OSUtil.h
@@ -362,12 +374,24 @@ add_library(CemuCafe
   OS/libs/gx2/GX2_Texture.h
   OS/libs/gx2/GX2_TilingAperture.cpp
   OS/libs/h264_avc/H264Dec.cpp
+  OS/libs/h264_avc/H264DecBackendAVC.cpp
   OS/libs/h264_avc/h264dec.h
+  OS/libs/h264_avc/H264DecInternal.h
   OS/libs/h264_avc/parser
   OS/libs/h264_avc/parser/H264Parser.cpp
   OS/libs/h264_avc/parser/H264Parser.h
   OS/libs/mic/mic.cpp
   OS/libs/mic/mic.h
+  OS/libs/nfc/ndef.cpp
+  OS/libs/nfc/ndef.h
+  OS/libs/nfc/nfc.cpp
+  OS/libs/nfc/nfc.h
+  OS/libs/nfc/stream.cpp
+  OS/libs/nfc/stream.h
+  OS/libs/nfc/TagV0.cpp
+  OS/libs/nfc/TagV0.h
+  OS/libs/nfc/TLV.cpp
+  OS/libs/nfc/TLV.h
   OS/libs/nlibcurl/nlibcurl.cpp
   OS/libs/nlibcurl/nlibcurlDebug.hpp
   OS/libs/nlibcurl/nlibcurl.h
@@ -396,6 +420,10 @@ add_library(CemuCafe
   OS/libs/nn_idbe/nn_idbe.h
   OS/libs/nn_ndm/nn_ndm.cpp
   OS/libs/nn_ndm/nn_ndm.h
+  OS/libs/nn_spm/nn_spm.cpp
+  OS/libs/nn_spm/nn_spm.h
+  OS/libs/nn_sl/nn_sl.cpp
+  OS/libs/nn_sl/nn_sl.h
   OS/libs/nn_nfp/AmiiboCrypto.h
   OS/libs/nn_nfp/nn_nfp.cpp
   OS/libs/nn_nfp/nn_nfp.h
@@ -403,6 +431,20 @@ add_library(CemuCafe
   OS/libs/nn_nim/nn_nim.h
   OS/libs/nn_olv/nn_olv.cpp
   OS/libs/nn_olv/nn_olv.h
+  OS/libs/nn_olv/nn_olv_Common.cpp
+  OS/libs/nn_olv/nn_olv_Common.h
+  OS/libs/nn_olv/nn_olv_InitializeTypes.cpp
+  OS/libs/nn_olv/nn_olv_InitializeTypes.h
+  OS/libs/nn_olv/nn_olv_DownloadCommunityTypes.cpp
+  OS/libs/nn_olv/nn_olv_DownloadCommunityTypes.h
+  OS/libs/nn_olv/nn_olv_UploadCommunityTypes.cpp
+  OS/libs/nn_olv/nn_olv_UploadCommunityTypes.h
+  OS/libs/nn_olv/nn_olv_UploadFavoriteTypes.cpp
+  OS/libs/nn_olv/nn_olv_UploadFavoriteTypes.h
+  OS/libs/nn_olv/nn_olv_PostTypes.cpp
+  OS/libs/nn_olv/nn_olv_PostTypes.h
+  OS/libs/nn_olv/nn_olv_OfflineDB.cpp
+  OS/libs/nn_olv/nn_olv_OfflineDB.h
   OS/libs/nn_pdm/nn_pdm.cpp
   OS/libs/nn_pdm/nn_pdm.h
   OS/libs/nn_save/nn_save.cpp
@@ -413,10 +455,26 @@ add_library(CemuCafe
   OS/libs/nn_uds/nn_uds.h
   OS/libs/nsyshid/nsyshid.cpp
   OS/libs/nsyshid/nsyshid.h
+  OS/libs/nsyshid/Backend.h
+  OS/libs/nsyshid/AttachDefaultBackends.cpp
+  OS/libs/nsyshid/Whitelist.cpp
+  OS/libs/nsyshid/Whitelist.h
+  OS/libs/nsyshid/BackendEmulated.cpp
+  OS/libs/nsyshid/BackendEmulated.h
+  OS/libs/nsyshid/BackendLibusb.cpp
+  OS/libs/nsyshid/BackendLibusb.h
+  OS/libs/nsyshid/BackendWindowsHID.cpp
+  OS/libs/nsyshid/BackendWindowsHID.h
+  OS/libs/nsyshid/Infinity.cpp
+  OS/libs/nsyshid/Infinity.h
+  OS/libs/nsyshid/Skylander.cpp
+  OS/libs/nsyshid/Skylander.h
   OS/libs/nsyskbd/nsyskbd.cpp
   OS/libs/nsyskbd/nsyskbd.h
   OS/libs/nsysnet/nsysnet.cpp
   OS/libs/nsysnet/nsysnet.h
+  OS/libs/ntag/ntag.cpp
+  OS/libs/ntag/ntag.h
   OS/libs/padscore/padscore.cpp
   OS/libs/padscore/padscore.h
   OS/libs/proc_ui/proc_ui.cpp
@@ -451,11 +509,7 @@ add_library(CemuCafe
   OS/RPL/rpl_structs.h
   OS/RPL/rpl_symbol_storage.cpp
   OS/RPL/rpl_symbol_storage.h
-  TitleList/BaseInfo.cpp
-  TitleList/BaseInfo.h
   TitleList/GameInfo.h
-  TitleList/MetaInfo.cpp
-  TitleList/MetaInfo.h
   TitleList/ParsedMetaXml.h
   TitleList/SaveInfo.cpp
   TitleList/SaveInfo.h
@@ -501,6 +555,22 @@ target_link_libraries(CemuCafe PRIVATE
 	ZLIB::ZLIB
 	zstd::zstd
 )
+
+if (ENABLE_WAYLAND)
+	# PUBLIC because wayland-client.h is included in VulkanAPI.h
+  target_link_libraries(CemuCafe PUBLIC Wayland::Client)
+endif()
+
+if (ENABLE_NSYSHID_LIBUSB)
+	if (ENABLE_VCPKG)
+		find_package(PkgConfig REQUIRED)
+		pkg_check_modules(libusb REQUIRED IMPORTED_TARGET libusb-1.0)
+		target_link_libraries(CemuCafe PRIVATE PkgConfig::libusb)
+	else ()
+		find_package(libusb MODULE REQUIRED)
+		target_link_libraries(CemuCafe PRIVATE libusb::libusb)
+	endif ()
+endif ()
 
 if (ENABLE_WXWIDGETS)
 	target_link_libraries(CemuCafe PRIVATE wx::base wx::core)

@@ -34,14 +34,19 @@ private:
 
 public:
 	// Set directories and return all directories that failed write access test
-	static std::set<fs::path> 
-	LoadOnce(const fs::path& user_data_path,
-			 const fs::path& config_path,
-			 const fs::path& cache_path,
-			 const fs::path& data_path);
+	static void
+	SetPaths(bool isPortableMode,
+		   const fs::path& executablePath,
+		   const fs::path& userDataPath,
+		   const fs::path& configPath,
+		   const fs::path& cachePath,
+		   const fs::path& dataPath,
+		   std::set<fs::path>& failedWriteAccess);
 
-	[[nodiscard]] static fs::path GetFullPath() { return s_full_path; }
-	[[nodiscard]] static fs::path GetFilename() { return s_filename; }
+	static void Init();
+
+	[[nodiscard]] static fs::path GetExecutablePath() { return s_executable_path; }
+	[[nodiscard]] static fs::path GetExecutableFilename() { return s_executable_filename; }
 	template <typename ...TArgs>
 	[[nodiscard]] static fs::path GetUserDataPath(TArgs&&... args){ return GetPath(s_user_data_path, std::forward<TArgs>(args)...); };
 	template <typename ...TArgs>
@@ -55,25 +60,31 @@ public:
 
 	template <typename ...TArgs>
 	[[nodiscard]] static fs::path GetMlcPath(TArgs&&... args){ return GetPath(GetMlcPath(), std::forward<TArgs>(args)...); };
+	static bool IsCustomMlcPath();
+	static bool IsCommandLineMlcPath();
 
 	// get mlc path to default cemu root dir/mlc01
 	[[nodiscard]] static fs::path GetDefaultMLCPath();
 
 private:
-	inline static fs::path s_full_path; // full filename
+	inline static bool s_isPortableMode{false};
+	inline static fs::path s_executable_path;
 	inline static fs::path s_user_data_path;
 	inline static fs::path s_config_path;
 	inline static fs::path s_cache_path;
 	inline static fs::path s_data_path;
-	inline static fs::path s_filename; // cemu.exe
+	inline static fs::path s_executable_filename; // cemu.exe
 	inline static fs::path s_mlc_path;
 
-public:	
+public:
+	// can be called before Init
+	[[nodiscard]] static bool IsPortableMode();
+
 	// general
 	[[nodiscard]] static bool LoadSharedLibrariesEnabled();
 	[[nodiscard]] static bool DisplayDRCEnabled();
 	[[nodiscard]] static bool FullscreenEnabled();
-	
+
 	// cpu
 	[[nodiscard]] static CPUMode GetCPUMode();
 	[[nodiscard]] static uint8 GetTimerShiftFactor();
@@ -103,10 +114,6 @@ public:
 	static void EnableDumpTextures(bool state);
 	static void EnableDumpLibcurlRequests(bool state);
 
-	// debug
-	[[nodiscard]] static bool FrameProfilerEnabled();
-	static void EnableFrameProfiler(bool state);
-
 	// hacks
 	[[nodiscard]] static bool VPADDelayEnabled();
 	[[nodiscard]] static bool ShaderPreventInfiniteLoopsEnabled();
@@ -114,6 +121,7 @@ public:
 	[[nodiscard]] static bool ForceSamplerRoundToPrecision();
 
 private:
+	inline static bool s_setPathsCalled = false;
 	// dump options
 	inline static bool s_dump_shaders = false;
 	inline static bool s_dump_textures = false;
@@ -123,7 +131,6 @@ private:
 	inline static uint8 s_timer_shift = 3; // right shift factor, 0 -> 8x, 3 -> 1x, 4 -> 0.5x
 
 	// debug
-	inline static bool s_frame_profiler_enabled = false;
 	inline static bool s_audio_aux_only = false;
 
 	inline static bool s_has_required_online_files = false;

@@ -190,6 +190,7 @@ std::queue<PipelineCompiler*> g_compilePipelineRequests;
 
 void compilePipeline_thread(sint32 threadIndex)
 {
+	SetThreadName("compilePl");
 #ifdef _WIN32
 	// one thread runs at normal priority while the others run at lower priority
 	if(threadIndex != 0)
@@ -370,8 +371,12 @@ void VulkanRenderer::indexData_uploadIndexMemory(uint32 offset, uint32 size)
 	// does nothing since the index buffer memory is coherent
 }
 
+float s_vkUniformData[512 * 4];
+
 void VulkanRenderer::uniformData_updateUniformVars(uint32 shaderStageIndex, LatteDecompilerShader* shader)
 {
+	auto GET_UNIFORM_DATA_PTR = [&](size_t index) { return s_vkUniformData + (index / 4); };
+
 	sint32 shaderAluConst;
 	sint32 shaderUniformRegisterOffset;
 
@@ -390,27 +395,23 @@ void VulkanRenderer::uniformData_updateUniformVars(uint32 shaderStageIndex, Latt
 		shaderUniformRegisterOffset = mmSQ_GS_UNIFORM_BLOCK_START;
 		break;
 	default:
-		cemu_assert_debug(false);
+		UNREACHABLE;
 	}
 
 	if (shader->resourceMapping.uniformVarsBufferBindingPoint >= 0)
 	{
-		float uniformData[512 * 4];
-
 		if (shader->uniform.list_ufTexRescale.empty() == false)
 		{
 			for (auto& entry : shader->uniform.list_ufTexRescale)
 			{
 				float* xyScale = LatteTexture_getEffectiveTextureScale(shader->shaderType, entry.texUnit);
-				float* v = uniformData + (entry.uniformLocation / 4);
 				memcpy(entry.currentValue, xyScale, sizeof(float) * 2);
-				memcpy(v, xyScale, sizeof(float) * 2);
+				memcpy(GET_UNIFORM_DATA_PTR(entry.uniformLocation), xyScale, sizeof(float) * 2);
 			}
 		}
 		if (shader->uniform.loc_alphaTestRef >= 0)
 		{
-			float* v = uniformData + (shader->uniform.loc_alphaTestRef / 4);
-			v[0] = LatteGPUState.contextNew.SX_ALPHA_REF.get_ALPHA_TEST_REF();
+			*GET_UNIFORM_DATA_PTR(shader->uniform.loc_alphaTestRef) = LatteGPUState.contextNew.SX_ALPHA_REF.get_ALPHA_TEST_REF();
 		}
 		if (shader->uniform.loc_pointSize >= 0)
 		{
@@ -418,41 +419,38 @@ void VulkanRenderer::uniformData_updateUniformVars(uint32 shaderStageIndex, Latt
 			float pointWidth = (float)pointSizeReg.get_WIDTH() / 8.0f;
 			if (pointWidth == 0.0f)
 				pointWidth = 1.0f / 8.0f; // minimum size
-			float* v = uniformData + (shader->uniform.loc_pointSize / 4);
-			v[0] = pointWidth;
+			*GET_UNIFORM_DATA_PTR(shader->uniform.loc_pointSize) = pointWidth;
 		}
 		if (shader->uniform.loc_remapped >= 0)
 		{
-			LatteBufferCache_LoadRemappedUniforms(shader, uniformData + (shader->uniform.loc_remapped / 4));
+			LatteBufferCache_LoadRemappedUniforms(shader, GET_UNIFORM_DATA_PTR(shader->uniform.loc_remapped));
 		}
 		if (shader->uniform.loc_uniformRegister >= 0)
 		{
 			uint32* uniformRegData = (uint32*)(LatteGPUState.contextRegister + mmSQ_ALU_CONSTANT0_0 + shaderAluConst);
-			float* v = uniformData + (shader->uniform.loc_uniformRegister / 4);
-			memcpy(v, uniformRegData, shader->uniform.count_uniformRegister * 16);
+			memcpy(GET_UNIFORM_DATA_PTR(shader->uniform.loc_uniformRegister), uniformRegData, shader->uniform.count_uniformRegister * 16);
 		}
 		if (shader->uniform.loc_windowSpaceToClipSpaceTransform >= 0)
 		{
 			sint32 viewportWidth;
 			sint32 viewportHeight;
 			LatteRenderTarget_GetCurrentVirtualViewportSize(&viewportWidth, &viewportHeight); // always call after _updateViewport()
-			float* v = uniformData + (shader->uniform.loc_windowSpaceToClipSpaceTransform / 4);
+			float* v = GET_UNIFORM_DATA_PTR(shader->uniform.loc_windowSpaceToClipSpaceTransform);
 			v[0] = 2.0f / (float)viewportWidth;
 			v[1] = 2.0f / (float)viewportHeight;
 		}
 		if (shader->uniform.loc_fragCoordScale >= 0)
 		{
-			float* coordScale = uniformData + (shader->uniform.loc_fragCoordScale / 4);
-			LatteMRT::GetCurrentFragCoordScale(coordScale);
+			LatteMRT::GetCurrentFragCoordScale(GET_UNIFORM_DATA_PTR(shader->uniform.loc_fragCoordScale));
 		}
 		if (shader->uniform.loc_verticesPerInstance >= 0)
 		{
-			*(int*)(uniformData + (shader->uniform.loc_verticesPerInstance / 4)) = m_streamoutState.verticesPerInstance;
+			*(int*)(s_vkUniformData + ((size_t)shader->uniform.loc_verticesPerInstance / 4)) = m_streamoutState.verticesPerInstance;
 			for (sint32 b = 0; b < LATTE_NUM_STREAMOUT_BUFFER; b++)
 			{
 				if (shader->uniform.loc_streamoutBufferBase[b] >= 0)
 				{
-					*(int*)(uniformData + (shader->uniform.loc_streamoutBufferBase[b] / 4)) = m_streamoutState.buffer[b].ringBufferOffset;
+					*(uint32*)GET_UNIFORM_DATA_PTR(shader->uniform.loc_streamoutBufferBase[b]) = m_streamoutState.buffer[b].ringBufferOffset;
 				}
 			}
 		}
@@ -463,7 +461,7 @@ void VulkanRenderer::uniformData_updateUniformVars(uint32 shaderStageIndex, Latt
 		}
 		uint32 bufferAlignmentM1 = std::max(m_featureControl.limits.minUniformBufferOffsetAlignment, m_featureControl.limits.nonCoherentAtomSize) - 1;
 		const uint32 uniformOffset = m_uniformVarBufferWriteIndex;
-		memcpy(m_uniformVarBufferPtr + uniformOffset, uniformData, shader->uniform.uniformRangeSize);
+		memcpy(m_uniformVarBufferPtr + uniformOffset, s_vkUniformData, shader->uniform.uniformRangeSize);
 		m_uniformVarBufferWriteIndex += shader->uniform.uniformRangeSize;
 		m_uniformVarBufferWriteIndex = (m_uniformVarBufferWriteIndex + bufferAlignmentM1) & ~bufferAlignmentM1;
 		// update dynamic offset
@@ -516,15 +514,15 @@ uint64 VulkanRenderer::GetDescriptorSetStateHash(LatteDecompilerShader* shader)
 		switch (shader->shaderType)
 		{
 		case LatteConst::ShaderType::Vertex:
-			hostTextureUnit += CEMU_VS_TEX_UNIT_BASE;
+			hostTextureUnit += LATTE_CEMU_VS_TEX_UNIT_BASE;
 			texUnitRegIndex += Latte::REGADDR::SQ_TEX_RESOURCE_WORD0_N_VS;
 			break;
 		case LatteConst::ShaderType::Pixel:
-			hostTextureUnit += CEMU_PS_TEX_UNIT_BASE;
+			hostTextureUnit += LATTE_CEMU_PS_TEX_UNIT_BASE;
 			texUnitRegIndex += Latte::REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS;
 			break;
 		case LatteConst::ShaderType::Geometry:
-			hostTextureUnit += CEMU_GS_TEX_UNIT_BASE;
+			hostTextureUnit += LATTE_CEMU_GS_TEX_UNIT_BASE;
 			texUnitRegIndex += Latte::REGADDR::SQ_TEX_RESOURCE_WORD0_N_GS;
 			break;
 		default:
@@ -634,15 +632,15 @@ VkDescriptorSetInfo* VulkanRenderer::draw_getOrCreateDescriptorSet(PipelineInfo*
 		switch (shader->shaderType)
 		{
 		case LatteConst::ShaderType::Vertex:
-			hostTextureUnit += CEMU_VS_TEX_UNIT_BASE;
+			hostTextureUnit += LATTE_CEMU_VS_TEX_UNIT_BASE;
 			texUnitRegIndex += Latte::REGADDR::SQ_TEX_RESOURCE_WORD0_N_VS;
 			break;
 		case LatteConst::ShaderType::Pixel:
-			hostTextureUnit += CEMU_PS_TEX_UNIT_BASE;
+			hostTextureUnit += LATTE_CEMU_PS_TEX_UNIT_BASE;
 			texUnitRegIndex += Latte::REGADDR::SQ_TEX_RESOURCE_WORD0_N_PS;
 			break;
 		case LatteConst::ShaderType::Geometry:
-			hostTextureUnit += CEMU_GS_TEX_UNIT_BASE;
+			hostTextureUnit += LATTE_CEMU_GS_TEX_UNIT_BASE;
 			texUnitRegIndex += Latte::REGADDR::SQ_TEX_RESOURCE_WORD0_N_GS;
 			break;
 		default:
@@ -677,7 +675,7 @@ VkDescriptorSetInfo* VulkanRenderer::draw_getOrCreateDescriptorSet(PipelineInfo*
 			info.imageView = nullTexture1D.view;
 			info.sampler = nullTexture1D.sampler;
 			textureArray.emplace_back(info);
-			// forceLog_printf("Vulkan-Info: Shader 0x%016llx uses 1D texture but bound texture has mismatching type (dim: 0x%02x)", shader->baseHash, textureView->gx2Dim);
+			// cemuLog_log(LogType::Force, "Vulkan-Info: Shader 0x{:016x} uses 1D texture but bound texture has mismatching type (dim: 0x{:02x})", shader->baseHash, textureView->gx2Dim);
 			continue;
 		}
 		else if (textureDim == Latte::E_DIM::DIM_2D && (textureView->dim != Latte::E_DIM::DIM_2D && textureView->dim != Latte::E_DIM::DIM_2D_MSAA))
@@ -688,7 +686,7 @@ VkDescriptorSetInfo* VulkanRenderer::draw_getOrCreateDescriptorSet(PipelineInfo*
 			info.imageView = nullTexture2D.view;
 			info.sampler = nullTexture2D.sampler;
 			textureArray.emplace_back(info);
-			// forceLog_printf("Vulkan-Info: Shader 0x%016llx uses 2D texture but bound texture has mismatching type (dim: 0x%02x)", shader->baseHash, textureView->gx2Dim);
+			// cemuLog_log(LogType::Force, "Vulkan-Info: Shader 0x{:016x} uses 2D texture but bound texture has mismatching type (dim: 0x{:02x})", shader->baseHash, textureView->gx2Dim);
 			continue;
 		}
 
@@ -1287,9 +1285,9 @@ void VulkanRenderer::draw_beginSequence()
 
 	// update shader state
 	LatteSHRC_UpdateActiveShaders();
-	if (m_state.drawSequenceSkip)
+	if (LatteGPUState.activeShaderHasError)
 	{
-		debug_printf("Skipping drawcalls due to shader error\n");
+		cemuLog_logDebugOnce(LogType::Force, "Skipping drawcalls due to shader error");
 		m_state.drawSequenceSkip = true;
 		cemu_assert_debug(false);
 		return;
@@ -1577,9 +1575,9 @@ void VulkanRenderer::draw_updateVertexBuffersDirectAccess()
 		uint32 bufferSize = LatteGPUState.contextRegister[bufferBaseRegisterIndex + 1] + 1;
 		uint32 bufferStride = (LatteGPUState.contextRegister[bufferBaseRegisterIndex + 2] >> 11) & 0xFFFF;
 
-		if (bufferAddress == MPTR_NULL)
+		if (bufferAddress == MPTR_NULL) [[unlikely]]
 		{
-			cemu_assert_unimplemented();
+			bufferAddress = 0x10000000;
 		}
 		if (m_state.currentVertexBinding[bufferIndex].offset == bufferAddress)
 			continue;
@@ -1594,18 +1592,18 @@ void VulkanRenderer::draw_updateUniformBuffersDirectAccess(LatteDecompilerShader
 {
 	if (shader->uniformMode == LATTE_DECOMPILER_UNIFORM_MODE_FULL_CBANK)
 	{
-		// use full uniform buffers
-		for (sint32 t = 0; t < shader->uniformBufferListCount; t++)
+		for(const auto& buf : shader->list_quickBufferList)
 		{
-			sint32 i = shader->uniformBufferList[t];
+			sint32 i = buf.index;
 			MPTR physicalAddr = LatteGPUState.contextRegister[uniformBufferRegOffset + i * 7 + 0];
 			uint32 uniformSize = LatteGPUState.contextRegister[uniformBufferRegOffset + i * 7 + 1] + 1;
 
-			if (physicalAddr == MPTR_NULL)
+			if (physicalAddr == MPTR_NULL) [[unlikely]]
 			{
 				cemu_assert_unimplemented();
 				continue;
 			}
+			uniformSize = std::min<uint32>(uniformSize, buf.size);
 
 			cemu_assert_debug(physicalAddr < 0x50000000);
 
@@ -1624,7 +1622,7 @@ void VulkanRenderer::draw_updateUniformBuffersDirectAccess(LatteDecompilerShader
 				dynamicOffsetInfo.shaderUB[VulkanRendererConst::SHADER_STAGE_INDEX_FRAGMENT].unformBufferOffset[bufferIndex] = physicalAddr - m_importedMemBaseAddress;
 				break;
 			default:
-				cemu_assert_debug(false);
+				UNREACHABLE;
 			}
 		}
 	}

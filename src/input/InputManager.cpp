@@ -21,7 +21,7 @@ InputManager::InputManager()
 		}
 		catch (const std::exception& ex)
 		{
-			cemuLog_force(ex.what());
+			cemuLog_log(LogType::Force, ex.what());
 		}
 	}
 	*/
@@ -67,7 +67,7 @@ void InputManager::load() noexcept
 		}
 		catch (const std::exception& ex)
 		{
-			cemuLog_force("can't load controller profile: {}", ex.what());
+			cemuLog_log(LogType::Force, "can't load controller profile: {}", ex.what());
 		}
 	}
 }
@@ -198,7 +198,7 @@ bool InputManager::load(size_t player_index, std::string_view filename)
 			}
 			catch (const std::exception& ex)
 			{
-				cemuLog_force("can't load controller: {}", ex.what());
+				cemuLog_log(LogType::Force, "can't load controller: {}", ex.what());
 			}
 		}
 
@@ -207,7 +207,7 @@ bool InputManager::load(size_t player_index, std::string_view filename)
 	}
 	catch (const std::exception& ex)
 	{
-		cemuLog_force("can't load config file: {}", ex.what());
+		cemuLog_log(LogType::Force, "can't load config file: {}", ex.what());
 		return false;
 	}
 }
@@ -420,7 +420,7 @@ bool InputManager::migrate_config(const fs::path& file_path)
 	}
 	catch (const std::exception& ex)
 	{
-		cemuLog_force("can't migrate config file {}: {}", file_path.string(), ex.what());
+		cemuLog_log(LogType::Force, "can't migrate config file {}: {}", file_path.string(), ex.what());
 	}
 
 	return false;
@@ -436,7 +436,7 @@ void InputManager::save() noexcept
 		}
 		catch (const std::exception& ex)
 		{
-			cemuLog_force("can't save controller profile: {}", ex.what());
+			cemuLog_log(LogType::Force, "can't save controller profile: {}", ex.what());
 		}
 	}
 }
@@ -472,15 +472,12 @@ bool InputManager::save(size_t player_index, std::string_view filename)
 		emulated_controller->type_string()
 	}.c_str());
 
+	if(!is_default_file)
+		emulated_controller->m_profile_name = std::string{filename};
+
 	if (emulated_controller->has_profile_name())
 		emulated_controller_node.append_child("profile").append_child(pugi::node_pcdata).set_value(
 			emulated_controller->get_profile_name().c_str());
-	else if (!is_default_file)
-	{
-		emulated_controller->m_profile_name = std::string{filename};
-		emulated_controller_node.append_child("profile").append_child(pugi::node_pcdata).set_value(
-			emulated_controller->get_profile_name().c_str());
-	}
 
 	// custom settings
 	emulated_controller->save(emulated_controller_node);
@@ -620,7 +617,7 @@ EmulatedControllerPtr InputManager::set_controller(size_t player_index, Emulated
 	}
 	catch (const std::exception& ex)
 	{
-		cemuLog_force("Unable to set controller type {} on player index {}: {}", type, player_index, ex.what());
+		cemuLog_log(LogType::Force, "Unable to set controller type {} on player index {}: {}", type, player_index, ex.what());
 	}
 
 	return {};
@@ -934,7 +931,7 @@ std::optional<glm::ivec2> InputManager::get_right_down_mouse_info(bool* is_pad)
 
 void InputManager::update_thread()
 {
-	SetThreadName("InputManager::update_thread");
+	SetThreadName("Input_update");
 	while (!m_update_thread_shutdown.load(std::memory_order::relaxed))
 	{
 		std::shared_lock lock(m_mutex);

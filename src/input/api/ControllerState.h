@@ -3,6 +3,12 @@
 #include <glm/vec2.hpp>
 #include "util/helpers/fspinlock.h"
 
+enum class PositionVisibility {
+	NONE = 0,
+	FULL = 1,
+	PARTIAL = 2
+};
+
 // helper class for storing and managing button press states in a thread-safe manner
 struct ControllerButtonState
 {
@@ -102,6 +108,7 @@ struct ControllerButtonState
 	ControllerButtonState& operator=(ControllerButtonState&& other)
 	{
 		cemu_assert_debug(!other.m_spinlock.is_locked());
+		std::scoped_lock _l(this->m_spinlock, other.m_spinlock);
 		this->m_pressedButtons = std::move(other.m_pressedButtons);
 		return *this;
 	}

@@ -180,7 +180,7 @@ struct
 	bool hasOpenApplicationArea; // set to true if application area was opened or created
 	// currently active Amiibo
 	bool hasActiveAmiibo;
-	std::wstring amiiboPath;
+	fs::path amiiboPath;
 	bool hasInvalidHMAC;
 	uint32 amiiboTouchTime;
 	AmiiboRawNFCData amiiboNFCData; // raw data
@@ -188,7 +188,6 @@ struct
 	AmiiboProcessedData amiiboProcessedData;
 }nfp_data = { 0 };
 
-bool nnNfp_touchNfcTagFromFile(const wchar_t* filePath, uint32* nfcError);
 bool nnNfp_writeCurrentAmiibo();
 
 #include "AmiiboCrypto.h"
@@ -216,7 +215,7 @@ void nnNfpExport_SetDeactivateEvent(PPCInterpreter_t* hCPU)
 	ppcDefineParamStructPtr(osEvent, coreinit::OSEvent, 0);
 	ppcDefineParamMPTR(osEventMPTR, 0);
 
-	nfpLog_printf("SetDeactivateEvent(0x%08x)", osEventMPTR);
+	cemuLog_log(LogType::NN_NFP, "SetDeactivateEvent(0x{:08x})", osEventMPTR);
 
 	coreinit::OSInitEvent(osEvent, coreinit::OSEvent::EVENT_STATE::STATE_NOT_SIGNALED, coreinit::OSEvent::EVENT_MODE::MODE_AUTO);
 
@@ -241,7 +240,7 @@ void nnNfpExport_Initialize(PPCInterpreter_t* hCPU)
 
 void nnNfpExport_StartDetection(PPCInterpreter_t* hCPU)
 {
-	nfpLog_printf("StartDetection()");
+	cemuLog_log(LogType::NN_NFP, "StartDetection()");
 	nnNfpLock();
 	nfp_data.isDetecting = true;
 	nnNfpUnlock();
@@ -250,7 +249,7 @@ void nnNfpExport_StartDetection(PPCInterpreter_t* hCPU)
 
 void nnNfpExport_StopDetection(PPCInterpreter_t* hCPU)
 {
-	nfpLog_printf("StopDetection()");
+	cemuLog_log(LogType::NN_NFP, "StopDetection()");
 	nnNfpLock();
 	nfp_data.isDetecting = false;
 	nnNfpUnlock();
@@ -274,7 +273,7 @@ static_assert(sizeof(nfpTagInfo_t) == 0x54, "nfpTagInfo_t has invalid size");
 
 void nnNfpExport_GetTagInfo(PPCInterpreter_t* hCPU)
 {
-	nfpLog_printf("GetTagInfo(0x%08x)", hCPU->gpr[3]);
+	cemuLog_log(LogType::NN_NFP, "GetTagInfo(0x{:08x})", hCPU->gpr[3]);
 	ppcDefineParamStructPtr(tagInfo, nfpTagInfo_t, 0);
 
 	nnNfpLock();
@@ -294,44 +293,9 @@ void nnNfpExport_GetTagInfo(PPCInterpreter_t* hCPU)
 	osLib_returnFromFunction(hCPU, BUILD_NN_RESULT(NN_RESULT_LEVEL_SUCCESS, NN_RESULT_MODULE_NN_NFP, 0));
 }
 
-typedef struct  
-{
-	/* +0x00 */ uint8 uidLength;
-	/* +0x01 */ uint8 uid[0xA];
-	/* +0x0B */ uint8 ukn0B;
-	/* +0x0C */ uint8 ukn0C;
-	/* +0x0D */ uint8 ukn0D;
-	// more?
-}NFCTagInfoCallbackParam_t;
-
-uint32 NFCGetTagInfo(uint32 index, uint32 timeout, MPTR functionPtr, void* userParam)
-{
-	nfpLog_printf("NFCGetTagInfo(%d,%d,0x%08x,0x%08x)", index, timeout, functionPtr, userParam?memory_getVirtualOffsetFromPointer(userParam):0);
-
-
-	cemu_assert(index == 0);
-
-	nnNfpLock();
-
-	StackAllocator<NFCTagInfoCallbackParam_t> _callbackParam;
-	NFCTagInfoCallbackParam_t* callbackParam = _callbackParam.GetPointer();
-
-	memset(callbackParam, 0x00, sizeof(NFCTagInfoCallbackParam_t));
-
-	memcpy(callbackParam->uid, nfp_data.amiiboProcessedData.uid, nfp_data.amiiboProcessedData.uidLength);
-	callbackParam->uidLength = (uint8)nfp_data.amiiboProcessedData.uidLength;
-
-	PPCCoreCallback(functionPtr, index, 0, _callbackParam.GetPointer(), userParam);
-
-	nnNfpUnlock();
-
-
-	return 0; // 0 -> success
-}
-
 void nnNfpExport_Mount(PPCInterpreter_t* hCPU)
 {
-	nfpLog_printf("Mount()");
+	cemuLog_log(LogType::NN_NFP, "Mount()");
 	nnNfpLock();
 	if (nfp_data.hasActiveAmiibo == false)
 	{
@@ -348,14 +312,14 @@ void nnNfpExport_Mount(PPCInterpreter_t* hCPU)
 
 void nnNfpExport_Unmount(PPCInterpreter_t* hCPU)
 {
-	nfpLog_printf("Unmount()");
+	cemuLog_log(LogType::NN_NFP, "Unmount()");
 	nfp_data.hasOpenApplicationArea = false;
 	osLib_returnFromFunction(hCPU, BUILD_NN_RESULT(NN_RESULT_LEVEL_SUCCESS, NN_RESULT_MODULE_NN_NFP, 0));
 }
 
 void nnNfpExport_MountRom(PPCInterpreter_t* hCPU)
 {
-	nfpLog_printf("MountRom()");
+	cemuLog_log(LogType::NN_NFP, "MountRom()");
 	nnNfpLock();
 	if (nfp_data.hasActiveAmiibo == false)
 	{
@@ -386,7 +350,7 @@ static_assert(sizeof(nfpRomInfo_t) == 0x36, "nfpRomInfo_t has invalid size");
 
 void nnNfpExport_GetNfpRomInfo(PPCInterpreter_t* hCPU)
 {
-	nfpLog_printf("GetNfpRomInfo(0x%08x)", hCPU->gpr[3]);
+	cemuLog_log(LogType::NN_NFP, "GetNfpRomInfo(0x{:08x})", hCPU->gpr[3]);
 	ppcDefineParamStructPtr(romInfo, nfpRomInfo_t, 0);
 
 	nnNfpLock();
@@ -438,7 +402,7 @@ static_assert(offsetof(nfpCommonData_t, applicationAreaSize) == 0xE, "nfpCommonD
 
 void nnNfpExport_GetNfpCommonInfo(PPCInterpreter_t* hCPU)
 {
-	nfpLog_printf("GetNfpCommonInfo(0x%08x)", hCPU->gpr[3]);
+	cemuLog_log(LogType::NN_NFP, "GetNfpCommonInfo(0x{:08x})", hCPU->gpr[3]);
 	ppcDefineParamStructPtr(commonInfo, nfpCommonData_t, 0);
 
 	nnNfpLock();
@@ -453,7 +417,7 @@ void nnNfpExport_GetNfpCommonInfo(PPCInterpreter_t* hCPU)
 		assert_dbg();
 	memset(commonInfo, 0x00, sizeof(nfpCommonData_t));
 
-	forceLogDebug_printf("GetNfpCommonInfo(0x%08x)");
+	cemuLog_logDebug(LogType::Force, "GetNfpCommonInfo(0x{:08x})");
 
 	commonInfo->writeCount[0] = nfp_data.amiiboNFCData.writeCounter[0];
 	commonInfo->writeCount[1] = nfp_data.amiiboNFCData.writeCounter[1];
@@ -492,7 +456,7 @@ typedef struct
 
 void nnNfpExport_GetNfpRegisterInfo(PPCInterpreter_t* hCPU)
 {
-	nfpLog_printf("GetNfpRegisterInfo(0x%08x)", hCPU->gpr[3]);
+	cemuLog_log(LogType::NN_NFP, "GetNfpRegisterInfo(0x{:08x})", hCPU->gpr[3]);
 	ppcDefineParamStructPtr(registerInfo, nfpRegisterInfo_t, 0);
 
 	if(!registerInfo)
@@ -515,7 +479,7 @@ void nnNfpExport_GetNfpRegisterInfo(PPCInterpreter_t* hCPU)
 
 void nnNfpExport_InitializeRegisterInfoSet(PPCInterpreter_t* hCPU)
 {
-	nfpLog_printf("InitializeRegisterInfoSet(0x%08x)", hCPU->gpr[3]);
+	cemuLog_log(LogType::NN_NFP, "InitializeRegisterInfoSet(0x{:08x})", hCPU->gpr[3]);
 	ppcDefineParamStructPtr(registerInfoSet, nfpRegisterInfoSet_t, 0);
 
 	memset(registerInfoSet, 0, sizeof(nfpRegisterInfoSet_t));
@@ -525,7 +489,7 @@ void nnNfpExport_InitializeRegisterInfoSet(PPCInterpreter_t* hCPU)
 
 void nnNfpExport_SetNfpRegisterInfo(PPCInterpreter_t* hCPU)
 {
-	nfpLog_printf("SetNfpRegisterInfo(0x%08x)", hCPU->gpr[3]);
+	cemuLog_log(LogType::NN_NFP, "SetNfpRegisterInfo(0x{:08x})", hCPU->gpr[3]);
 	ppcDefineParamStructPtr(registerInfoSet, nfpRegisterInfoSet_t, 0);
 
 	memcpy(nfp_data.amiiboInternal.amiiboSettings.mii, registerInfoSet->ownerMii, sizeof(nfp_data.amiiboInternal.amiiboSettings.mii));
@@ -538,7 +502,7 @@ void nnNfpExport_SetNfpRegisterInfo(PPCInterpreter_t* hCPU)
 
 void nnNfpExport_IsExistApplicationArea(PPCInterpreter_t* hCPU)
 {
-	nfpLog_printf("IsExistApplicationArea()");
+	cemuLog_log(LogType::NN_NFP, "IsExistApplicationArea()");
 	if (!nfp_data.hasActiveAmiibo || !nfp_data.isMounted)
 	{
 		osLib_returnFromFunction(hCPU, 0);
@@ -550,7 +514,7 @@ void nnNfpExport_IsExistApplicationArea(PPCInterpreter_t* hCPU)
 
 void nnNfpExport_OpenApplicationArea(PPCInterpreter_t* hCPU)
 {
-	nfpLog_printf("OpenApplicationArea(0x%08x)", hCPU->gpr[3]);
+	cemuLog_log(LogType::NN_NFP, "OpenApplicationArea(0x{:08x})", hCPU->gpr[3]);
 	ppcDefineParamU32(appAreaId, 0);
 
 	// note - this API doesn't fail if the application area has already been opened?
@@ -575,7 +539,7 @@ void nnNfpExport_OpenApplicationArea(PPCInterpreter_t* hCPU)
 
 void nnNfpExport_ReadApplicationArea(PPCInterpreter_t* hCPU)
 {
-	nfpLog_printf("ReadApplicationArea(0x%08x, 0x%x)", hCPU->gpr[3], hCPU->gpr[4]);
+	cemuLog_log(LogType::NN_NFP, "ReadApplicationArea(0x{:08x}, 0x{:x})", hCPU->gpr[3], hCPU->gpr[4]);
 	ppcDefineParamPtr(bufferPtr, uint8*, 0);
 	ppcDefineParamU32(len, 1);
 
@@ -592,7 +556,7 @@ void nnNfpExport_ReadApplicationArea(PPCInterpreter_t* hCPU)
 
 void nnNfpExport_WriteApplicationArea(PPCInterpreter_t* hCPU)
 {
-	nfpLog_printf("WriteApplicationArea(0x%08x, 0x%x, 0x%08x)", hCPU->gpr[3], hCPU->gpr[4], hCPU->gpr[5]);
+	cemuLog_log(LogType::NN_NFP, "WriteApplicationArea(0x{:08x}, 0x{:x}, 0x{:08x})", hCPU->gpr[3], hCPU->gpr[4], hCPU->gpr[5]);
 	ppcDefineParamPtr(bufferPtr, uint8*, 0);
 	ppcDefineParamU32(len, 1);
 	
@@ -628,7 +592,7 @@ typedef struct
 
 void nnNfpExport_CreateApplicationArea(PPCInterpreter_t* hCPU)
 {
-	nfpLog_printf("CreateApplicationArea(0x%08x)", hCPU->gpr[3]);
+	cemuLog_log(LogType::NN_NFP, "CreateApplicationArea(0x{:08x})", hCPU->gpr[3]);
 	ppcDefineParamPtr(createInfo, NfpCreateInfo_t, 0);
 
 	if (nfp_data.hasOpenApplicationArea || (nfp_data.amiiboInternal.amiiboSettings.flags&0x20))
@@ -667,7 +631,7 @@ void nnNfpExport_CreateApplicationArea(PPCInterpreter_t* hCPU)
 	// this API forces a flush (unsure, but without this data written by Smash doesn't stick)
 	if (!nnNfp_writeCurrentAmiibo())
 	{
-		forceLog_printf("Failed to write Amiibo file data when trying to remove appArea");
+		cemuLog_log(LogType::Force, "Failed to write Amiibo file data when trying to remove appArea");
 		osLib_returnFromFunction(hCPU, BUILD_NN_RESULT(NN_RESULT_LEVEL_STATUS, NN_RESULT_MODULE_NN_NFP, 0));
 		return;
 	}
@@ -677,7 +641,7 @@ void nnNfpExport_CreateApplicationArea(PPCInterpreter_t* hCPU)
 
 void nnNfpExport_DeleteApplicationArea(PPCInterpreter_t* hCPU)
 {
-	nfpLog_printf("DeleteApplicationArea()");
+	cemuLog_log(LogType::NN_NFP, "DeleteApplicationArea()");
 
 	if (nfp_data.isReadOnly)
 	{
@@ -697,7 +661,7 @@ void nnNfpExport_DeleteApplicationArea(PPCInterpreter_t* hCPU)
 	// this API forces a flush
 	if (!nnNfp_writeCurrentAmiibo())
 	{
-		forceLog_printf("Failed to write Amiibo file data when trying to remove appArea");
+		cemuLog_log(LogType::Force, "Failed to write Amiibo file data when trying to remove appArea");
 		osLib_returnFromFunction(hCPU, BUILD_NN_RESULT(NN_RESULT_LEVEL_STATUS, NN_RESULT_MODULE_NN_NFP, 0));
 		return;
 	}
@@ -707,19 +671,19 @@ void nnNfpExport_DeleteApplicationArea(PPCInterpreter_t* hCPU)
 
 void nnNfpExport_Flush(PPCInterpreter_t* hCPU)
 {
-	nfpLog_printf("Flush()");
+	cemuLog_log(LogType::NN_NFP, "Flush()");
 
 	// write Amiibo data
 	if (nfp_data.isReadOnly) 
 	{
-		forceLog_printf("Cannot write to Amiibo when it is mounted in read-only mode");
+		cemuLog_log(LogType::Force, "Cannot write to Amiibo when it is mounted in read-only mode");
 		osLib_returnFromFunction(hCPU, BUILD_NN_RESULT(NN_RESULT_LEVEL_STATUS, NN_RESULT_MODULE_NN_NFP, 0));
 		return;
 	}
 
 	if (!nnNfp_writeCurrentAmiibo())
 	{
-		forceLog_printf("Failed to write Amiibo data");
+		cemuLog_log(LogType::Force, "Failed to write Amiibo data");
 		osLib_returnFromFunction(hCPU, BUILD_NN_RESULT(NN_RESULT_LEVEL_STATUS, NN_RESULT_MODULE_NN_NFP, 0));
 		return;
 	}
@@ -748,7 +712,7 @@ static_assert(offsetof(AmiiboSettingsArgs_t, commonInfo) == 0x114);
 
 void nnNfpExport_GetAmiiboSettingsArgs(PPCInterpreter_t* hCPU)
 {
-	nfpLog_printf("GetAmiiboSettingsArgs(0x%08x)", hCPU->gpr[3]);
+	cemuLog_log(LogType::NN_NFP, "GetAmiiboSettingsArgs(0x{:08x})", hCPU->gpr[3]);
 	ppcDefineParamStructPtr(settingsArg, AmiiboSettingsArgs_t, 0);
 
 	memset(settingsArg, 0, sizeof(AmiiboSettingsArgs_t));
@@ -770,7 +734,17 @@ void nnNfp_unloadAmiibo()
 	nnNfpUnlock();
 }
 
-bool nnNfp_touchNfcTagFromFile(const wchar_t* filePath, uint32* nfcError)
+bool nnNfp_isInitialized()
+{
+	return nfp_data.nfpIsInitialized;
+}
+
+// CEMU NFC error codes
+#define NFC_ERROR_NONE					(0)
+#define NFC_ERROR_NO_ACCESS				(1)
+#define NFC_ERROR_INVALID_FILE_FORMAT	(2)
+
+bool nnNfp_touchNfcTagFromFile(const fs::path& filePath, uint32* nfcError)
 {
 	AmiiboRawNFCData rawData = { 0 };
 	auto nfcData = FileStream::LoadIntoMemory(filePath);
@@ -837,7 +811,7 @@ bool nnNfp_touchNfcTagFromFile(const wchar_t* filePath, uint32* nfcError)
 
 	if (serialCheckByte0 != bcc0 || serialCheckByte1 != bcc1)
 	{
-		forceLog_printf("nn_nfp: Mismatch in serial checksum of scanned NFC tag");
+		cemuLog_log(LogType::Force, "nn_nfp: Mismatch in serial checksum of scanned NFC tag");
 	}
 	nfp_data.amiiboProcessedData.uidLength = 7;
 	memcpy(nfp_data.amiiboProcessedData.uid, serialNumber, 7);
@@ -847,11 +821,11 @@ bool nnNfp_touchNfcTagFromFile(const wchar_t* filePath, uint32* nfcError)
 	memcpy(&nfp_data.amiiboNFCData, &rawData, sizeof(AmiiboRawNFCData));
 	// decrypt amiibo
 	amiiboDecrypt();
-	nfp_data.amiiboPath = std::wstring(filePath);
+	nfp_data.amiiboPath = filePath;
 	nfp_data.hasActiveAmiibo = true;
 	if (nfp_data.activateEvent)
 	{
-		coreinit::OSEvent* osEvent = (coreinit::OSEvent*)memory_getPointerFromVirtualOffset(nfp_data.activateEvent);
+		MEMPTR<coreinit::OSEvent> osEvent(nfp_data.activateEvent);
 		coreinit::OSSignalEvent(osEvent);
 	}
 	nfp_data.amiiboTouchTime = GetTickCount();
@@ -917,7 +891,7 @@ void nnNfp_update()
 
 void nnNfpExport_GetNfpState(PPCInterpreter_t* hCPU)
 {
-	nfpLog_printf("GetNfpState()");
+	cemuLog_log(LogType::NN_NFP, "GetNfpState()");
 
 	// workaround for Mario Party 10 eating CPU cycles in an infinite loop (maybe due to incorrect NFP detection handling?)
 	uint64 titleId = CafeSystem::GetForegroundTitleId();
@@ -961,6 +935,41 @@ void nnNfpExport_GetNfpState(PPCInterpreter_t* hCPU)
 
 namespace nn::nfp
 {
+	typedef struct  
+	{
+		/* +0x00 */ uint8 uidLength;
+		/* +0x01 */ uint8 uid[0xA];
+		/* +0x0B */ uint8 ukn0B;
+		/* +0x0C */ uint8 ukn0C;
+		/* +0x0D */ uint8 ukn0D;
+		// more?
+	}NFCTagInfoCallbackParam_t;
+
+	uint32 NFCGetTagInfo(uint32 index, uint32 timeout, MPTR functionPtr, void* userParam)
+	{
+		cemuLog_log(LogType::NN_NFP, "NFCGetTagInfo({},{},0x{:08x},0x{:08x})", index, timeout, functionPtr, userParam ? memory_getVirtualOffsetFromPointer(userParam) : 0);
+
+
+		cemu_assert(index == 0);
+
+		nnNfpLock();
+
+		StackAllocator<NFCTagInfoCallbackParam_t> _callbackParam;
+		NFCTagInfoCallbackParam_t* callbackParam = _callbackParam.GetPointer();
+
+		memset(callbackParam, 0x00, sizeof(NFCTagInfoCallbackParam_t));
+
+		memcpy(callbackParam->uid, nfp_data.amiiboProcessedData.uid, nfp_data.amiiboProcessedData.uidLength);
+		callbackParam->uidLength = (uint8)nfp_data.amiiboProcessedData.uidLength;
+
+		PPCCoreCallback(functionPtr, index, 0, _callbackParam.GetPointer(), userParam);
+
+		nnNfpUnlock();
+
+
+		return 0; // 0 -> success
+	}
+
 	uint32 GetErrorCode(uint32 result)
 	{
 		uint32 level = (result >> 0x1b) & 3;
@@ -1020,9 +1029,6 @@ namespace nn::nfp
 		nnNfp_load(); // legacy interface, update these to use cafeExportRegister / cafeExportRegisterFunc
 
 		cafeExportRegisterFunc(nn::nfp::GetErrorCode, "nn_nfp", "GetErrorCode__Q2_2nn3nfpFRCQ2_2nn6Result", LogType::Placeholder);
-
-		// NFC API 
-		cafeExportRegister("nn_nfp", NFCGetTagInfo, LogType::Placeholder);
 	}
 
 }

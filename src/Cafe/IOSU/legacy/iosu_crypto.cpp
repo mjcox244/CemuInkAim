@@ -292,16 +292,6 @@ void iosuCrypto_generateDeviceCertificate()
 	BN_CTX_free(context);
 }
 
-bool iosuCrypto_hasAllDataForLogin()
-{
-	if (hasOtpMem == false)
-		return false;
-	if (hasSeepromMem == false)
-		return false;
-	// todo - check if certificates are available
-	return true;
-}
-
 sint32 iosuCrypto_getDeviceCertificateBase64Encoded(char* output)
 {
 	iosuCrypto_base64Encode((uint8*)&g_wiiuDeviceCert, sizeof(g_wiiuDeviceCert), output);
@@ -326,12 +316,12 @@ bool iosuCrypto_loadCertificate(uint32 id, std::wstring_view mlcSubpath, std::ws
 		pkeyData = FileStream::LoadIntoMemory(pkeyPath);
 		if (!pkeyData || pkeyData->empty())
 		{
-			cemuLog_force("Unable to load private key file {}", pkeyPath.generic_string());
+			cemuLog_log(LogType::Force, "Unable to load private key file {}", pkeyPath.generic_string());
 			return false;
 		}
 		else if ((pkeyData->size() % 16) != 0)
 		{
-			cemuLog_force("Private key file has invalid length. Possibly corrupted? File: {}", pkeyPath.generic_string());
+			cemuLog_log(LogType::Force, "Private key file has invalid length. Possibly corrupted? File: {}", pkeyPath.generic_string());
 			return false;
 		}
 	}
@@ -393,24 +383,24 @@ bool iosuCrypto_addClientCertificate(void* sslctx, sint32 certificateId)
 		{
 			if (SSL_CTX_use_certificate(ctx, iosuCryptoCertificates.certList[i].cert) != 1)
 			{
-				forceLog_printf("Unable to setup certificate %d", certificateId);
+				cemuLog_log(LogType::Force, "Unable to setup certificate {}", certificateId);
 				return false;
 			}
 			if (SSL_CTX_use_RSAPrivateKey(ctx, iosuCryptoCertificates.certList[i].pkey) != 1)
 			{
-				forceLog_printf("Unable to setup certificate %d RSA private key", certificateId);
+				cemuLog_log(LogType::Force, "Unable to setup certificate {} RSA private key", certificateId);
 				return false;
 			}
 
 			if (SSL_CTX_check_private_key(ctx) == false)
 			{
-				forceLog_printf("Certificate private key could not be validated (verify required files for online mode or disable online mode)");
+				cemuLog_log(LogType::Force, "Certificate private key could not be validated (verify required files for online mode or disable online mode)");
 			}
 
 			return true;
 		}
 	}
-	forceLog_printf("Certificate not found (verify required files for online mode or disable online mode)");
+	cemuLog_log(LogType::Force, "Certificate not found (verify required files for online mode or disable online mode)");
 	return false;
 }
 
@@ -438,7 +428,7 @@ bool iosuCrypto_addCustomCACertificate(void* sslctx, uint8* certData, sint32 cer
 	X509* cert = d2i_X509(NULL, (const unsigned char**)&tempPtr, certLength);
 	if (cert == nullptr)
 	{
-		forceLog_printf("Invalid custom server PKI certificate");
+		cemuLog_log(LogType::Force, "Invalid custom server PKI certificate");
 		return false;
 	}
 	X509_STORE_add_cert(store, cert);
@@ -571,7 +561,7 @@ void iosuCrypto_init()
 		// verify if OTP is ok
 		if (length != 1024) // todo - should also check some fixed values to verify integrity of otp dump
 		{
-			forceLog_printf("IOSU_CRYPTO: otp.bin has wrong size (must be 1024 bytes)");
+			cemuLog_log(LogType::Force, "IOSU_CRYPTO: otp.bin has wrong size (must be 1024 bytes)");
 			hasOtpMem = false;
 		}
 		else
@@ -582,7 +572,7 @@ void iosuCrypto_init()
 	}
 	else
 	{
-		forceLog_printf("IOSU_CRYPTO: No otp.bin found. Online mode cannot be used");
+		cemuLog_log(LogType::Force, "IOSU_CRYPTO: No otp.bin found. Online mode cannot be used");
 		hasOtpMem = false;
 	}
 
@@ -615,10 +605,10 @@ void iosuCrypto_init()
 	iosuCrypto_loadSSLCertificates();
 }
 
-bool iosuCrypto_checkRequirementMLCFile(std::string_view mlcSubpath, std::wstring& additionalErrorInfo_filePath)
+bool iosuCrypto_checkRequirementMLCFile(std::string_view mlcSubpath, std::string& additionalErrorInfo_filePath)
 {
 	const auto path = ActiveSettings::GetMlcPath(mlcSubpath);
-	additionalErrorInfo_filePath = path.generic_wstring();
+	additionalErrorInfo_filePath = _pathToUtf8(path);
 	sint32 fileDataSize = 0;
 	auto fileData = FileStream::LoadIntoMemory(path);
 	if (!fileData)
@@ -626,7 +616,7 @@ bool iosuCrypto_checkRequirementMLCFile(std::string_view mlcSubpath, std::wstrin
 	return true;
 }
 
-sint32 iosuCrypt_checkRequirementsForOnlineMode(std::wstring& additionalErrorInfo)
+sint32 iosuCrypt_checkRequirementsForOnlineMode(std::string& additionalErrorInfo)
 {
 	std::error_code ec;
 	// check if otp.bin is present

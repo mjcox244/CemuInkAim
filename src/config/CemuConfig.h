@@ -6,6 +6,9 @@
 #include "Cafe/Account/Account.h"
 
 #include <wx/language.h>
+#include <wx/intl.h>
+
+enum class NetworkService;
 
 struct GameEntry
 {
@@ -115,11 +118,10 @@ ENABLE_ENUM_ITERATORS(PrecompiledShaderOption, PrecompiledShaderOption::Auto, Pr
 
 enum class AccurateShaderMulOption
 {
-	False = 0, // ignore non-ieee MUL special cases
-	True = 1, // fully emulate non-ieee MUL special cases
-	Min = 2, // similar to true, but avoids conditionals (instead relies on min() and abs())
+	False = 0, // always use standard multiplication
+	True = 1 // fully emulate non-ieee MUL special cases (0*anything = 0)
 };
-ENABLE_ENUM_ITERATORS(AccurateShaderMulOption, AccurateShaderMulOption::False, AccurateShaderMulOption::Min);
+ENABLE_ENUM_ITERATORS(AccurateShaderMulOption, AccurateShaderMulOption::False, AccurateShaderMulOption::True);
 
 enum class CPUMode
 {
@@ -213,7 +215,6 @@ struct fmt::formatter<AccurateShaderMulOption> : formatter<string_view> {
 		{
 		case AccurateShaderMulOption::True: name = "true"; break;
 		case AccurateShaderMulOption::False: name = "false"; break;
-		case AccurateShaderMulOption::Min: name = "min"; break;
 		default: name = "unknown"; break;
 		}
 		return formatter<string_view>::format(name, ctx);
@@ -260,15 +261,15 @@ struct fmt::formatter<CafeConsoleRegion> : formatter<string_view> {
 		string_view name;
 		switch (v)
 		{
-		case CafeConsoleRegion::JPN: name = "Japan"; break;
-		case CafeConsoleRegion::USA: name = "USA"; break;
-		case CafeConsoleRegion::EUR: name = "Europe"; break;
-		case CafeConsoleRegion::AUS_DEPR: name = "Australia"; break;
-		case CafeConsoleRegion::CHN: name = "China"; break;
-		case CafeConsoleRegion::KOR: name = "Korea"; break;
-		case CafeConsoleRegion::TWN: name = "Taiwan"; break;
-		case CafeConsoleRegion::Auto: name = "Auto"; break;
-		default: name = "many"; break;
+		case CafeConsoleRegion::JPN: name = wxTRANSLATE("Japan"); break;
+		case CafeConsoleRegion::USA: name = wxTRANSLATE("USA"); break;
+		case CafeConsoleRegion::EUR: name = wxTRANSLATE("Europe"); break;
+		case CafeConsoleRegion::AUS_DEPR: name = wxTRANSLATE("Australia"); break;
+		case CafeConsoleRegion::CHN: name = wxTRANSLATE("China"); break;
+		case CafeConsoleRegion::KOR: name = wxTRANSLATE("Korea"); break;
+		case CafeConsoleRegion::TWN: name = wxTRANSLATE("Taiwan"); break;
+		case CafeConsoleRegion::Auto: name = wxTRANSLATE("Auto"); break;
+		default: name = wxTRANSLATE("many"); break;
 		
 		}
 		return formatter<string_view>::format(name, ctx);
@@ -342,6 +343,7 @@ namespace DefaultColumnSize {
 		game_time = 140u,
 		game_started = 160u,
 		region = 80u,
+        title_id = 160u
 	};
 };
 
@@ -353,10 +355,9 @@ struct CemuConfig
 	};
 
 	CemuConfig(const CemuConfig&) = delete;
-	//
 
 	// sets mlc path, updates permanent config value, saves config
-	void SetMLCPath(std::wstring_view path, bool save = true);
+	void SetMLCPath(fs::path path, bool save = true);
 
 	ConfigValue<uint64> log_flag{ 0 };
 	ConfigValue<bool> advanced_ppc_logging{ false };
@@ -365,12 +366,22 @@ struct CemuConfig
 	
 	ConfigValue<sint32> language{ wxLANGUAGE_DEFAULT };
 	ConfigValue<bool> use_discord_presence{ true };
-	ConfigValue<std::wstring> mlc_path {};
+	ConfigValue<std::string> mlc_path{};
 	ConfigValue<bool> fullscreen_menubar{ false };
 	ConfigValue<bool> fullscreen{ false };
+	ConfigValue<bool> feral_gamemode{false};
 	ConfigValue<std::string> proxy_server{};
 
-	std::vector<std::wstring> game_paths;
+	// temporary workaround because feature crashes on macOS
+#if BOOST_OS_MACOS
+#define DISABLE_SCREENSAVER_DEFAULT false
+#else
+#define DISABLE_SCREENSAVER_DEFAULT true
+#endif
+	ConfigValue<bool> disable_screensaver{DISABLE_SCREENSAVER_DEFAULT};
+#undef DISABLE_SCREENSAVER_DEFAULT
+
+	std::vector<std::string> game_paths;
 	std::mutex game_cache_entries_mutex;
 	std::vector<GameEntry> game_cache_entries;
 
@@ -390,8 +401,8 @@ struct CemuConfig
 
 	// max 15 entries
 	static constexpr size_t kMaxRecentEntries = 15;
-	std::vector<std::wstring> recent_launch_files;
-	std::vector<std::wstring> recent_nfc_files;
+	std::vector<std::string> recent_launch_files;
+	std::vector<std::string> recent_nfc_files;
 
 	Vector2i window_position{-1,-1};
 	Vector2i window_size{ -1,-1 };
@@ -402,12 +413,15 @@ struct CemuConfig
 	Vector2i pad_size{ -1,-1 };
 	ConfigValue<bool> pad_maximized;
 
-	ConfigValue<bool> check_update{false};
+	ConfigValue<bool> check_update{true};
+	ConfigValue<bool> receive_untested_updates{false};
 	ConfigValue<bool> save_screenshot{true};
 
 	ConfigValue<bool> did_show_vulkan_warning{false};
-	ConfigValue<bool> did_show_graphic_pack_download{false};
+	ConfigValue<bool> did_show_graphic_pack_download{false}; // no longer used but we keep the config value around in case people downgrade Cemu. Despite the name this was used for the Getting Started dialog
 	ConfigValue<bool> did_show_macos_disclaimer{false};
+
+	ConfigValue<bool> show_icon_column{ true };
 
 	int game_list_style = 0;
 	std::string game_list_column_order;
@@ -419,6 +433,7 @@ struct CemuConfig
 		uint32 game_time = DefaultColumnSize::game_time;
 		uint32 game_started = DefaultColumnSize::game_started;
 		uint32 region = DefaultColumnSize::region;
+        uint32 title_id = 0;
 	} column_width{};
 
 	// graphics
@@ -427,7 +442,7 @@ struct CemuConfig
 	ConfigValue<int> vsync{ 0 }; // 0 = off, 1+ = on depending on render backend
 	ConfigValue<bool> gx2drawdone_sync {true};
 	ConfigValue<bool> render_upside_down{ false };
-	ConfigValue<bool> async_compile{ false };
+	ConfigValue<bool> async_compile{ true };
 
 	ConfigValue<bool> vk_accurate_barriers{ true };
 
@@ -471,8 +486,9 @@ struct CemuConfig
 	struct
 	{
 		ConfigValueBounds<uint32> m_persistent_id{ Account::kMinPersistendId, Account::kMinPersistendId, 0xFFFFFFFF };
-		ConfigValue<bool> online_enabled{false};
-		ConfigValue<int> active_service{0};
+		ConfigValue<bool> legacy_online_enabled{false};
+		ConfigValue<int> legacy_active_service{0};
+		std::unordered_map<uint32, NetworkService> service_select; // per-account service index. Key is persistentId
 	}account{};
 
 	// input
@@ -484,17 +500,28 @@ struct CemuConfig
 
 	// debug
 	ConfigValueBounds<CrashDump> crash_dump{ CrashDump::Disabled };
+	ConfigValue<uint16> gdb_port{ 1337 };
 
 	void Load(XMLConfigParser& parser);
 	void Save(XMLConfigParser& parser);
 
-	void AddRecentlyLaunchedFile(std::wstring_view file);
-	void AddRecentNfcFile(std::wstring_view file);
+	void AddRecentlyLaunchedFile(std::string_view file);
+	void AddRecentNfcFile(std::string_view file);
 
 	bool IsGameListFavorite(uint64 titleId);
 	void SetGameListFavorite(uint64 titleId, bool isFavorite);
 	bool GetGameListCustomName(uint64 titleId, std::string& customName);
 	void SetGameListCustomName(uint64 titleId, std::string customName);
+
+	NetworkService GetAccountNetworkService(uint32 persistentId);
+	void SetAccountSelectedService(uint32 persistentId, NetworkService serviceIndex);
+	
+	// emulated usb devices
+	struct
+	{
+		ConfigValue<bool> emulate_skylander_portal{false};
+		ConfigValue<bool> emulate_infinity_base{false};
+	}emulated_usb_devices{};
 
 	private:
 	GameEntry* GetGameEntryByTitleId(uint64 titleId);

@@ -50,14 +50,6 @@ extern char const g_fontawesome_data[];
 std::unordered_map<int, ImFont*> g_imgui_fonts;
 std::stack<int> g_font_requests;
 
-bool ImGui_BeginPadDistinct(const char* name, bool* p_open, ImGuiWindowFlags flags, bool pad)
-{
-	std::string distinctName = name;
-	if (pad)
-		distinctName += "##pad";
-	return ImGui::Begin(distinctName.c_str(), p_open, flags);
-}
-
 void ImGui_PrecacheFonts()
 {
 	while (!g_font_requests.empty())
@@ -110,6 +102,11 @@ void ImGui_PrecacheFonts()
 		g_renderer->Flush(true);
 		g_renderer->DeleteFontTextures();
 	}
+}
+
+void ImGui_ClearFonts()
+{
+    g_imgui_fonts.clear();
 }
 
 ImFont* ImGui_GetFont(float size)

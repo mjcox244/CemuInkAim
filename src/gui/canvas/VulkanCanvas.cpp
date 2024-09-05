@@ -2,7 +2,12 @@
 #include "Cafe/HW/Latte/Renderer/Vulkan/VulkanRenderer.h"
 #include "gui/guiWrapper.h"
 
+#if BOOST_OS_LINUX && HAS_WAYLAND
+#include "gui/helpers/wxWayland.h"
+#endif
+
 #include <wx/msgdlg.h>
+#include <helpers/wxHelpers.h>
 
 VulkanCanvas::VulkanCanvas(wxWindow* parent, const wxSize& size, bool is_main_window)
 	: IRenderCanvas(is_main_window), wxWindow(parent, wxID_ANY, wxDefaultPosition, size, wxNO_FULL_REPAINT_ON_RESIZE | wxWANTS_CHARS)
@@ -10,20 +15,15 @@ VulkanCanvas::VulkanCanvas(wxWindow* parent, const wxSize& size, bool is_main_wi
 	Bind(wxEVT_PAINT, &VulkanCanvas::OnPaint, this);
 	Bind(wxEVT_SIZE, &VulkanCanvas::OnResize, this);
 
-	if(is_main_window)
+	WindowHandleInfo& canvas = is_main_window ? gui_getWindowInfo().canvas_main : gui_getWindowInfo().canvas_pad;
+	gui_initHandleContextFromWxWidgetsWindow(canvas, this);
+	#if BOOST_OS_LINUX && HAS_WAYLAND
+	if (canvas.backend == WindowHandleInfo::Backend::WAYLAND)
 	{
-		WindowHandleInfo& canvasMain = gui_getWindowInfo().canvas_main;
-		gui_initHandleContextFromWxWidgetsWindow(canvasMain, this);
-		#if BOOST_OS_LINUX
-		if(canvasMain.backend == WindowHandleInfo::Backend::WAYLAND)
-		{	
-			m_subsurface = std::make_unique<wxWlSubsurface>(this);
-			canvasMain.surface = m_subsurface->getSurface();
-		}
-		#endif
+		m_subsurface = std::make_unique<wxWlSubsurface>(this);
+		canvas.surface = m_subsurface->getSurface();
 	}
-	else
-		gui_initHandleContextFromWxWidgetsWindow(gui_getWindowInfo().canvas_pad, this);
+	#endif
 
 	cemu_assert(g_vulkan_available);
 
@@ -37,8 +37,8 @@ VulkanCanvas::VulkanCanvas(wxWindow* parent, const wxSize& size, bool is_main_wi
 	}
 	catch(const std::exception& ex)
 	{
-		const auto msg = fmt::format(fmt::runtime(_("Error when initializing Vulkan renderer:\n{}").ToStdString()), ex.what());
-		forceLog_printf(const_cast<char*>(msg.c_str()));
+		cemuLog_log(LogType::Force, "Error when initializing Vulkan renderer: {}", ex.what());
+		auto msg = formatWxString(_("Error when initializing Vulkan renderer:\n{}"), ex.what());
 		wxMessageDialog dialog(this, msg, _("Error"), wxOK | wxCENTRE | wxICON_ERROR);
 		dialog.ShowModal();
 		exit(0);
@@ -54,8 +54,9 @@ VulkanCanvas::~VulkanCanvas()
 
 	if(!m_is_main_window)
 	{
-		if(auto vulkan_renderer = VulkanRenderer::GetInstance())
-			vulkan_renderer->StopUsingPadAndWait();
+		VulkanRenderer* vkr = (VulkanRenderer*)g_renderer.get();
+		if(vkr)
+			vkr->StopUsingPadAndWait();
 	}
 }
 
@@ -65,17 +66,17 @@ void VulkanCanvas::OnPaint(wxPaintEvent& event)
 
 void VulkanCanvas::OnResize(wxSizeEvent& event)
 {
-#if BOOST_OS_LINUX
-	if(m_subsurface)
-	{
-		int32_t x,y;
-		GetScreenPosition(&x,&y);
-		m_subsurface->setPosition(x, y);
-	}
-#endif
 	const wxSize size = GetSize();
 	if (size.GetWidth() == 0 || size.GetHeight() == 0)
 		return;
+
+#if BOOST_OS_LINUX && HAS_WAYLAND
+	if(m_subsurface)
+	{
+		auto sRect = GetScreenRect();
+		m_subsurface->setSize(sRect.GetX(), sRect.GetY(), sRect.GetWidth(), sRect.GetHeight());
+	}
+#endif
 
 	const wxRect refreshRect(size);
 	RefreshRect(refreshRect, false);
